@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+clients.db
+*.log
+.system_generated/
+*.csv
+*.xlsx
