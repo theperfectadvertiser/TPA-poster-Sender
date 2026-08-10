@@ -6,6 +6,18 @@ import time
 import io
 import math
 import database as db
+import base64
+
+def get_image_base64(filename):
+    """Encodes a local file to base64 for direct browser embedding."""
+    if os.path.exists(filename):
+        try:
+            with open(filename, "rb") as f:
+                data = f.read()
+                return base64.b64encode(data).decode()
+        except Exception:
+            return None
+    return None
 
 # Page Config with Tab Icon & Title
 st.set_page_config(
@@ -476,6 +488,9 @@ with tab1:
                 status_text.text("⚙️ Initializing: Caching daily poster(s) onto Meta Cloud API...")
                 for file in poster_files:
                     try:
+                        # Save a copy locally so it can be rendered inside the Chat Inbox!
+                        with open(file.name, "wb") as f:
+                            f.write(file.getvalue())
                         # Read file bytes
                         file_bytes = file.getvalue()
                         media_id = upload_image_to_meta(file_bytes, file.name, file.type)
@@ -488,6 +503,12 @@ with tab1:
             else:
                 # Simulated Mode - fake IDs
                 for i, file in enumerate(poster_files):
+                    try:
+                        # Save a copy locally so it can be rendered inside the Chat Inbox!
+                        with open(file.name, "wb") as f:
+                            f.write(file.getvalue())
+                    except Exception:
+                        pass
                     cached_media_map[file.name] = f"sim_media_id_{i}"
                 log_content += f"[{time.strftime('%H:%M:%S')}] Simulated caching for {len(poster_files)} poster(s) complete.\n"
                 log_terminal.code(log_content, language="text", wrap_lines=True)
@@ -836,21 +857,8 @@ with tab3:
             try:
                 msgs_df = db.get_messages_for_phone(selected_phone)
                 
-                # Chat bubbles HTML container
-                chat_html = """
-                <div style="
-                    height: 450px; 
-                    overflow-y: auto; 
-                    padding: 20px; 
-                    background-color: #0b0f19; 
-                    border: 1px solid #1e293b; 
-                    border-radius: 16px; 
-                    margin-bottom: 20px; 
-                    display: flex; 
-                    flex-direction: column; 
-                    gap: 12px;
-                ">
-                """
+                # Chat bubbles HTML container (written in a single line string to avoid markdown code formatting)
+                chat_html = '<div style="height: 480px; overflow-y: auto; padding: 20px; background-color: #0b0f19; border: 1px solid #1e293b; border-radius: 16px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px;">'
                 
                 for idx, row in msgs_df.iterrows():
                     sender = row['sender']
@@ -859,38 +867,24 @@ with tab3:
                     
                     if sender == 'client':
                         # Received bubble (Slate-blue)
-                        chat_html += f"""
-                        <div style="
-                            align-self: flex-start; 
-                            max-width: 75%; 
-                            background-color: #1e293b; 
-                            color: #f1f5f9; 
-                            padding: 12px 16px; 
-                            border-radius: 16px 16px 16px 4px; 
-                            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
-                        ">
-                            <div style="font-size: 14px; font-weight: 500; line-height: 1.4;">{msg_text}</div>
-                            <div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div>
-                        </div>
-                        """
+                        chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
                     else:
                         # Sent bubble (Dark gray/Teal border)
-                        chat_html += f"""
-                        <div style="
-                            align-self: flex-end; 
-                            max-width: 75%; 
-                            background-color: #0f172a; 
-                            border: 1px solid #0d9488; 
-                            color: #2dd4bf; 
-                            padding: 12px 16px; 
-                            border-radius: 16px 16px 4px 16px; 
-                            box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15);
-                        ">
-                            <div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">{msg_text}</div>
-                            <div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div>
-                        </div>
-                        """
-                chat_html += "</div>"
+                        # Check if this is a Sent Poster image type message
+                        if str(msg_text).startswith("🖼️ Sent Poster:"):
+                            poster_name = str(msg_text).replace("🖼️ Sent Poster:", "").strip()
+                            b64 = get_image_base64(poster_name)
+                            
+                            if b64:
+                                # Show actual image bubble
+                                chat_html += f'<div style="align-self: flex-end; max-width: 60%; background-color: #0f172a; border: 1px solid #0d9488; padding: 8px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><img src="data:image/png;base64,{b64}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">🖼️ {poster_name}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 4px; padding: 0 4px;">{ts} (You)</div></div>'
+                            else:
+                                # Fallback if image file is not on the server
+                                chat_html += f'<div style="align-self: flex-end; max-width: 75%; background-color: #0f172a; border: 1px solid #0d9488; color: #2dd4bf; padding: 12px 16px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">🖼️ Sent Poster: {poster_name}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div></div>'
+                        else:
+                            # Standard text bubble
+                            chat_html += f'<div style="align-self: flex-end; max-width: 75%; background-color: #0f172a; border: 1px solid #0d9488; color: #2dd4bf; padding: 12px 16px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div></div>'
+                chat_html += '</div>'
                 st.markdown(chat_html, unsafe_allow_html=True)
                 
             except Exception as e:
