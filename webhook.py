@@ -160,8 +160,8 @@ def capture_message():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"=============================================")
-    print(f"📡 Webhook server starting on port {port}...")
-    print(f"🔑 Verification Token: {VERIFY_TOKEN}")
-    print(f"🔗 Local Webhook Endpoint: http://localhost:{port}/webhook")
+    print(f"[Webhook] Server starting on port {port}...")
+    print(f"[Webhook] Verification Token: {VERIFY_TOKEN}")
+    print(f"[Webhook] Local Endpoint: http://localhost:{port}/webhook")
     print(f"=============================================")
     app.run(host="0.0.0.0", port=port, debug=False)
