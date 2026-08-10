@@ -819,17 +819,34 @@ with tab3:
     selected_phone = None
     with col_chat_list:
         st.markdown("#### Recent Conversations")
+        
+        # Inbox Controls
+        col_c_ref, col_c_spacer = st.columns([1, 2])
+        with col_c_ref:
+            if st.button("🔄 Refresh"):
+                st.rerun()
+                
         try:
             conversations = db.get_conversations()
+            
+            # Chat Search filter
+            search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
+            if search_chat and not conversations.empty:
+                conversations = conversations[
+                    conversations['name'].str.contains(search_chat, case=False, na=False) |
+                    conversations['phone'].str.contains(search_chat, case=False, na=False)
+                ]
+                
             if conversations.empty:
-                st.info("No incoming messages or chat history found. Make sure your webhook is receiving messages!")
+                st.info("No matching conversations found.")
             else:
                 options = []
                 phone_map = {}
                 for idx, row in conversations.iterrows():
                     name = row['name'] if row['name'] else "Unknown Lead"
-                    # Create short preview label
-                    label = f"{name} ({row['phone']}) \n└─ {row['message'][:25]}..."
+                    # If last message was from client, show a red unread badge emoji
+                    unread_badge = "🔴 " if row['sender'] == 'client' else ""
+                    label = f"{unread_badge}{name} ({row['phone']}) \n└─ {row['message'][:25]}..."
                     options.append(label)
                     phone_map[label] = row['phone']
                 
