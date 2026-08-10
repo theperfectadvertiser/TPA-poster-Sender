@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
 import database as db
 import os
+import json
+import requests
 
 # Initialize database tables
 db.init_db()
@@ -8,12 +10,61 @@ db.init_db()
 app = Flask(__name__)
 
 # Verification token for Meta webhook configuration
-# You will paste this token in Meta App Developer Console (Webhooks section)
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "tpa_secure_verify_token_2026")
+
+def get_meta_credentials():
+    """Reads credentials written by app.py to dynamically query Meta endpoints."""
+    if os.path.exists("config.json"):
+        try:
+            with open("config.json", "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[ERROR] Failed to load config.json: {e}")
+    return {}
+
+def download_whatsapp_media(media_id, filename):
+    """Downloads binary media files from Meta Cloud API."""
+    creds = get_meta_credentials()
+    token = creds.get("ACCESS_TOKEN")
+    
+    if not token or token.startswith("YOUR_"):
+        print("[ERROR] Cannot download media: Access Token not configured or invalid.")
+        return False
+        
+    try:
+        # Step 1: Get media URL from Meta metadata
+        metadata_url = f"https://graph.facebook.com/v20.0/{media_id}"
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        res = requests.get(metadata_url, headers=headers)
+        if res.status_code != 200:
+            print(f"[ERROR] Failed to fetch media metadata from Meta: {res.text}")
+            return False
+            
+        media_url = res.json().get("url")
+        if not media_url:
+            print("[ERROR] Media URL not found in metadata response.")
+            return False
+            
+        # Step 2: Download binary data using media URL
+        media_res = requests.get(media_url, headers=headers)
+        if media_res.status_code == 200:
+            with open(filename, "wb") as f:
+                f.write(media_res.content)
+            print(f"[SUCCESS] Downloaded incoming media file to local workspace: {filename}")
+            return True
+        else:
+            print(f"[ERROR] Failed to download media bytes: {media_res.text}")
+            return False
+            
+    except Exception as e:
+        print(f"[ERROR] Media download crashed: {str(e)}")
+        return False
 
 @app.route("/", methods=["GET"])
 def home():
-    return "TPA Webhook Server is RUNNING!", 200
+    return "TPA Webhook Server with Image Downloader is RUNNING!", 200
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
@@ -54,44 +105,56 @@ def capture_message():
                         msg_id = msg.get("id")
                         msg_type = msg.get("type")
                         
+                        # Extract profile name of the contact
+                        contact_name = "WhatsApp Contact"
+                        for contact in value.get("contacts", []):
+                            if contact.get("wa_id") == from_phone:
+                                contact_name = contact.get("profile", {}).get("name", "WhatsApp Contact")
+                                break
+                        
                         # Process text messages
                         if msg_type == "text":
                             body = msg.get("text", {}).get("body", "")
+                            print(f"[INBOX] Incoming TEXT from {contact_name} ({from_phone}): '{body}'")
                             
-                            # Extract profile name of the contact
-                            contact_name = "WhatsApp Contact"
-                            for contact in value.get("contacts", []):
-                                if contact.get("wa_id") == from_phone:
-                                    contact_name = contact.get("profile", {}).get("name", "WhatsApp Contact")
-                                    break
-                                    
-                            print(f"[INBOX] Incoming message from {contact_name} ({from_phone}): '{body}'")
-                            
-                            # 1. Save the incoming message
+                            # Save text message to DB
                             db.save_message(from_phone, "client", body, msg_id)
                             
-                            # 2. Check if client exists in clients database, if not, auto-create a lead!
-                            try:
-                                _, count = db.get_clients_dataframe(search_query=from_phone)
-                                if count == 0:
-                                    client_id = f"LEAD-{from_phone[-4:]}"
-                                    db.add_client(
-                                        client_id=client_id, 
-                                        name=contact_name, 
-                                        phone=from_phone, 
-                                        category="Incoming Lead", 
-                                        status="Active"
-                                    )
-                                    print(f"[DB] Auto-registered new client: {contact_name} ({from_phone})")
-                            except Exception as e:
-                                print(f"[ERROR] Auto-registering client failed: {str(e)}")
-                                
+                        # Process image messages
+                        elif msg_type == "image":
+                            image_id = msg.get("image", {}).get("id")
+                            filename = f"incoming_{image_id}.png"
+                            
+                            print(f"[INBOX] Incoming IMAGE from {contact_name} ({from_phone}). Attempting download...")
+                            
+                            # Download the image file locally
+                            download_success = download_whatsapp_media(image_id, filename)
+                            
+                            # Save media message label to DB
+                            db.save_message(from_phone, "client", f"📷 Incoming Image: {filename}", msg_id)
+                            
                         else:
-                            # Handle other types like images, documents, buttons, etc.
+                            # Handle other types like documents, buttons, etc.
                             body = f"[Sent a {msg_type} message]"
                             db.save_message(from_phone, "client", body, msg_id)
                             print(f"[INBOX] Received non-text message type: {msg_type} from {from_phone}")
-                            
+                        
+                        # Auto-register client in clients database if not present
+                        try:
+                            _, count = db.get_clients_dataframe(search_query=from_phone)
+                            if count == 0:
+                                client_id = f"LEAD-{from_phone[-4:]}"
+                                db.add_client(
+                                    client_id=client_id, 
+                                    name=contact_name, 
+                                    phone=from_phone, 
+                                    category="Incoming Lead", 
+                                    status="Active"
+                                )
+                                print(f"[DB] Auto-registered new client: {contact_name} ({from_phone})")
+                        except Exception as e:
+                            print(f"[ERROR] Auto-registering client failed: {str(e)}")
+                                
     return jsonify({"status": "processed"}), 200
 
 if __name__ == "__main__":

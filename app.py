@@ -250,6 +250,19 @@ st.session_state["ACCESS_TOKEN"] = ACCESS_TOKEN
 st.session_state["TEMPLATE_NAME"] = TEMPLATE_NAME
 st.session_state["LANGUAGE_CODE"] = LANGUAGE_CODE
 
+# Save config.json for the webhook.py background process
+import json
+try:
+    with open("config.json", "w") as config_file:
+        json.dump({
+            "PHONE_NUMBER_ID": PHONE_NUMBER_ID,
+            "WABA_ID": WABA_ID,
+            "ACCESS_TOKEN": ACCESS_TOKEN
+        }, config_file)
+except Exception:
+    pass
+
+
 # Title Header Banner
 st.markdown("""
 <div style="background: linear-gradient(135deg, #0f172a 0%, #115e59 100%); padding: 32px; border-radius: 16px; border: 1px solid #0d9488; margin-bottom: 25px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);">
@@ -884,7 +897,15 @@ with tab3:
                     
                     if sender == 'client':
                         # Received bubble (Slate-blue)
-                        chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
+                        if str(msg_text).startswith("📷 Incoming Image:"):
+                            incoming_name = str(msg_text).replace("📷 Incoming Image:", "").strip()
+                            b64_in = get_image_base64(incoming_name)
+                            if b64_in:
+                                chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="data:image/png;base64,{b64_in}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
+                            else:
+                                chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">📷 Incoming Image: {incoming_name}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
+                        else:
+                            chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
                     else:
                         # Sent bubble (Dark gray/Teal border)
                         # Check if this is a Sent Poster image type message
