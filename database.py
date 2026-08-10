@@ -2,6 +2,7 @@ import sqlite3
 import pandas as pd
 import re
 import os
+import time
 
 DB_FILE = "clients.db"
 
@@ -11,7 +12,7 @@ def get_db_connection():
     return conn
 
 def init_db():
-    """Initialize the SQLite database and create the clients table if it doesn't exist."""
+    """Initialize the SQLite database and create the clients & messages tables if they don't exist."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -23,6 +24,16 @@ def init_db():
             category TEXT,
             status TEXT DEFAULT 'Active',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            sender TEXT NOT NULL, -- 'client' or 'business'
+            message TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            msg_id TEXT UNIQUE
         )
     """)
     conn.commit()
@@ -269,3 +280,68 @@ def bulk_import(df, default_country_code="91"):
         "failed": len(failed_records),
         "failures": failed_records
     }
+
+def save_message(phone, sender, message, msg_id=None):
+    """Saves an incoming or outgoing chat message to the messages table."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Standardize phone number format
+        cleaned_phone = clean_phone_number(phone)
+        
+        # If no message ID is provided, generate a dummy one to satisfy unique constraint
+        if not msg_id:
+            msg_id = f"local_{cleaned_phone}_{time.time()}"
+            
+        cursor.execute(
+            """INSERT INTO messages (phone, sender, message, msg_id)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(msg_id) DO UPDATE SET
+                   phone=excluded.phone,
+                   sender=excluded.sender,
+                   message=excluded.message""",
+            (cleaned_phone, sender, message.strip(), msg_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error saving message: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_messages_for_phone(phone):
+    """Retrieves all chat messages for a specific phone number (ordered by timestamp)."""
+    conn = get_db_connection()
+    cleaned_phone = clean_phone_number(phone)
+    query = """
+        SELECT sender, message, timestamp, msg_id 
+        FROM messages 
+        WHERE phone = ? 
+        ORDER BY timestamp ASC
+    """
+    df = pd.read_sql_query(query, conn, params=[cleaned_phone])
+    conn.close()
+    return df
+
+def get_conversations():
+    """
+    Retrieves unique conversations (recent messages grouped by phone).
+    Joins with the clients table to retrieve the client name if available.
+    """
+    conn = get_db_connection()
+    # Query to fetch last message for each unique phone number
+    query = """
+        SELECT m.phone, m.sender, m.message, m.timestamp, c.name
+        FROM messages m
+        LEFT JOIN clients c ON m.phone = c.phone
+        INNER JOIN (
+            SELECT phone, MAX(timestamp) as max_ts
+            FROM messages
+            GROUP BY phone
+        ) last_msgs ON m.phone = last_msgs.phone AND m.timestamp = last_msgs.max_ts
+        ORDER BY m.timestamp DESC
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df

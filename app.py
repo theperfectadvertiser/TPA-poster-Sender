@@ -254,9 +254,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Navigation Tabs
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📤 Daily Poster Dispatch", 
     "👥 Master Client Database", 
+    "💬 Inbox & Live Chat",
     "🔧 Settings & Dev Sandbox"
 ])
 
@@ -349,6 +350,37 @@ def send_whatsapp_template(to_phone, client_name, media_id, include_name=True):
     except Exception as e:
         return {"status": "FAILED", "reason": str(e)}
 
+def send_direct_message(to_phone, message_text):
+    """Sends a direct free-form text message to the recipient's phone using Meta Cloud API."""
+    if not ACCESS_TOKEN or ACCESS_TOKEN.startswith("YOUR_"):
+        return {"status": "FAILED", "reason": "Credentials not set"}
+        
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to_phone,
+        "type": "text",
+        "text": {
+            "body": message_text
+        }
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        res_data = response.json()
+        if response.status_code == 200:
+            msg_id = res_data.get("messages", [{}])[0].get("id")
+            return {"status": "SUCCESS", "message_id": msg_id}
+        else:
+            error_msg = res_data.get("error", {}).get("message", response.text)
+            return {"status": "FAILED", "reason": error_msg}
+    except Exception as e:
+        return {"status": "FAILED", "reason": str(e)}
+
 # --- TAB 1: DAILY DISPATCH CENTER ---
 with tab1:
     st.subheader("Daily Broadcast Console")
@@ -415,7 +447,8 @@ with tab1:
         include_name_param = st.checkbox("Include Client Name as Body Parameter ({{1}})", value=True,
                                          help="Check this if your template has a body parameter {{1}} for personalization.")
     with col_p2:
-        st.markdown(" ") # alignment spacer
+        match_by_filename = st.checkbox("🎯 Targeted Dispatch (Match Filename with Client's Phone)", value=False,
+                                         help="Check this if you name your images with client phone numbers (e.g. 9876543210.png). The system will automatically map and send only the matching poster to each client.")
         
     # Send execution section
     if target_count > 0 and poster_files:
@@ -437,7 +470,8 @@ with tab1:
             start_time = time.time()
             
             # 1. Media caching (Upload images to Meta first in Live Mode)
-            cached_media_ids = []
+            # Map filenames to cached media IDs
+            cached_media_map = {}
             if send_mode == "Live WhatsApp Broadcast":
                 status_text.text("⚙️ Initializing: Caching daily poster(s) onto Meta Cloud API...")
                 for file in poster_files:
@@ -445,7 +479,7 @@ with tab1:
                         # Read file bytes
                         file_bytes = file.getvalue()
                         media_id = upload_image_to_meta(file_bytes, file.name, file.type)
-                        cached_media_ids.append(media_id)
+                        cached_media_map[file.name] = media_id
                         log_content += f"[{time.strftime('%H:%M:%S')}] Cached poster '{file.name}' to Meta Cloud. Media ID: {media_id}\n"
                         log_terminal.code(log_content, language="text", wrap_lines=True)
                     except Exception as e:
@@ -453,7 +487,8 @@ with tab1:
                         st.stop()
             else:
                 # Simulated Mode - fake IDs
-                cached_media_ids = [f"sim_media_id_{i}" for i in range(len(poster_files))]
+                for i, file in enumerate(poster_files):
+                    cached_media_map[file.name] = f"sim_media_id_{i}"
                 log_content += f"[{time.strftime('%H:%M:%S')}] Simulated caching for {len(poster_files)} poster(s) complete.\n"
                 log_terminal.code(log_content, language="text", wrap_lines=True)
             
@@ -468,11 +503,32 @@ with tab1:
                 c_name = row['Name']
                 c_phone = row['Phone']
                 
-                # Check for each poster uploaded
-                for img_idx, media_id in enumerate(cached_media_ids):
-                    poster_name = poster_files[img_idx].name
+                # Extract 10-digit number for phone number matching
+                short_phone = c_phone[-10:] if len(c_phone) >= 10 else c_phone
+                
+                if match_by_filename:
+                    # Filter poster files matching the client's phone number
+                    matched_files = []
+                    for file in poster_files:
+                        clean_name = os.path.splitext(file.name)[0]
+                        if (short_phone in clean_name) or (c_phone in clean_name):
+                            matched_files.append(file)
+                            
+                    if not matched_files:
+                        log_msg = f"[{time.strftime('%H:%M:%S')}] SKIPPED ⏭️ -> {c_name} ({c_phone}) | Reason: No matching poster filename found.\n"
+                        log_content += log_msg
+                        log_terminal.code(log_content, language="text", wrap_lines=True)
+                        continue
+                else:
+                    # Default: Send all files to all clients
+                    matched_files = poster_files
+                
+                # Check for each matched poster
+                for img_idx, file in enumerate(matched_files):
+                    poster_name = file.name
+                    media_id = cached_media_map[poster_name]
                     
-                    status_text.text(f"Sending Poster {img_idx+1}/{len(cached_media_ids)} to ({idx+1}/{target_count}): {c_name}...")
+                    status_text.text(f"Sending Poster {img_idx+1}/{len(matched_files)} to ({idx+1}/{target_count}): {c_name}...")
                     
                     if send_mode == "Live WhatsApp Broadcast":
                         res = send_whatsapp_template(
@@ -485,6 +541,7 @@ with tab1:
                             success_count += 1
                             log_msg = f"[{time.strftime('%H:%M:%S')}] Live SUCCESS ✅ -> {c_name} ({c_phone}) | MsgID: {res['message_id']} | Poster: {poster_name}\n"
                             log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SUCCESS", "Detail": res['message_id']})
+                            db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", res['message_id'])
                         else:
                             fail_count += 1
                             log_msg = f"[{time.strftime('%H:%M:%S')}] Live FAILED ❌ -> {c_name} ({c_phone}) | Reason: {res['reason']} | Poster: {poster_name}\n"
@@ -495,6 +552,7 @@ with tab1:
                         success_count += 1
                         log_msg = f"[{time.strftime('%H:%M:%S')}] Sim SUCCESS ✅ -> {c_name} ({c_phone}) | Poster: {poster_name}\n"
                         log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SIMULATED SUCCESS", "Detail": "None"})
+                        db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}")
                     
                     log_content += log_msg
                     log_terminal.code(log_content, language="text", wrap_lines=True)
@@ -728,8 +786,138 @@ with tab2:
                 st.success("💥 Database wiped clean. All records deleted!")
                 st.rerun()
 
-# --- TAB 3: SETTINGS & DEV SANDBOX ---
+# --- TAB 3: INBOX & LIVE CHAT ---
 with tab3:
+    st.subheader("💬 Two-way WhatsApp CRM Inbox")
+    st.write("View incoming replies from clients in real-time and reply directly to open conversations.")
+
+    # Two-column layout
+    col_chat_list, col_chat_window = st.columns([1, 2])
+
+    # 1. Left column: conversations list
+    selected_phone = None
+    with col_chat_list:
+        st.markdown("#### Recent Conversations")
+        try:
+            conversations = db.get_conversations()
+            if conversations.empty:
+                st.info("No incoming messages or chat history found. Make sure your webhook is receiving messages!")
+            else:
+                options = []
+                phone_map = {}
+                for idx, row in conversations.iterrows():
+                    name = row['name'] if row['name'] else "Unknown Lead"
+                    # Create short preview label
+                    label = f"{name} ({row['phone']}) \n└─ {row['message'][:25]}..."
+                    options.append(label)
+                    phone_map[label] = row['phone']
+                
+                selected_label = st.radio("Select Chat", options, label_visibility="collapsed")
+                if selected_label:
+                    selected_phone = phone_map[selected_label]
+        except Exception as e:
+            st.error(f"Error loading conversations: {e}")
+
+    # 2. Right column: chat window and direct reply
+    with col_chat_window:
+        if selected_phone:
+            # Get client details
+            client_name = "Unknown Client"
+            try:
+                client_info, count = db.get_clients_dataframe(search_query=selected_phone)
+                if count > 0:
+                    client_name = client_info.iloc[0]['Name']
+            except Exception as e:
+                pass
+                
+            st.markdown(f"#### Conversation with: **{client_name}** (`{selected_phone}`)")
+            
+            # Retrieve messages for this phone number
+            try:
+                msgs_df = db.get_messages_for_phone(selected_phone)
+                
+                # Chat bubbles HTML container
+                chat_html = """
+                <div style="
+                    height: 450px; 
+                    overflow-y: auto; 
+                    padding: 20px; 
+                    background-color: #0b0f19; 
+                    border: 1px solid #1e293b; 
+                    border-radius: 16px; 
+                    margin-bottom: 20px; 
+                    display: flex; 
+                    flex-direction: column; 
+                    gap: 12px;
+                ">
+                """
+                
+                for idx, row in msgs_df.iterrows():
+                    sender = row['sender']
+                    msg_text = row['message']
+                    ts = row['timestamp']
+                    
+                    if sender == 'client':
+                        # Received bubble (Slate-blue)
+                        chat_html += f"""
+                        <div style="
+                            align-self: flex-start; 
+                            max-width: 75%; 
+                            background-color: #1e293b; 
+                            color: #f1f5f9; 
+                            padding: 12px 16px; 
+                            border-radius: 16px 16px 16px 4px; 
+                            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+                        ">
+                            <div style="font-size: 14px; font-weight: 500; line-height: 1.4;">{msg_text}</div>
+                            <div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div>
+                        </div>
+                        """
+                    else:
+                        # Sent bubble (Dark gray/Teal border)
+                        chat_html += f"""
+                        <div style="
+                            align-self: flex-end; 
+                            max-width: 75%; 
+                            background-color: #0f172a; 
+                            border: 1px solid #0d9488; 
+                            color: #2dd4bf; 
+                            padding: 12px 16px; 
+                            border-radius: 16px 16px 4px 16px; 
+                            box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15);
+                        ">
+                            <div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">{msg_text}</div>
+                            <div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div>
+                        </div>
+                        """
+                chat_html += "</div>"
+                st.markdown(chat_html, unsafe_allow_html=True)
+                
+            except Exception as e:
+                st.error(f"Error loading chat bubbles: {e}")
+                
+            # Reply Input Form
+            with st.form(key=f"reply_form_{selected_phone}", clear_on_submit=True):
+                reply_text = st.text_area("Write reply...", placeholder="Type a message to reply...", label_visibility="collapsed")
+                col_sbtn, _ = st.columns([1, 2])
+                with col_sbtn:
+                    submit_reply = st.form_submit_button("📤 Send Direct Reply", use_container_width=True)
+                    
+                if submit_reply and reply_text.strip():
+                    with st.spinner("Sending message..."):
+                        res = send_direct_message(selected_phone, reply_text)
+                        if res["status"] == "SUCCESS":
+                            # Save reply to database
+                            db.save_message(selected_phone, "business", reply_text, res["message_id"])
+                            st.success("Reply dispatched successfully!")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to dispatch reply: {res['reason']}")
+        else:
+            st.info("👈 Select a conversation thread from the list to view chat and reply.")
+
+# --- TAB 4: SETTINGS & DEV SANDBOX ---
+with tab4:
     st.subheader("WhatsApp Cloud Developer Sandbox")
     st.write("This testing sandbox helps you verify that Meta API credentials, media uploads, and template parameters are correctly aligned with Meta servers *before* doing bulk blasts.")
     
