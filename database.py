@@ -5,37 +5,105 @@ import os
 import time
 
 DB_FILE = "clients.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Try to import psycopg2 for PostgreSQL support
+try:
+    import psycopg2
+    import psycopg2.extras
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+
+class PostgreSQLPlaceholderCursor:
+    """Wraps PostgreSQL cursor to translate SQLite '?' placeholders to '%s' dynamically."""
+    def __init__(self, cursor):
+        self._cursor = cursor
+    def execute(self, query, params=None):
+        if params is not None:
+            query = query.replace("?", "%s")
+        return self._cursor.execute(query, params)
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+class PostgreSQLPlaceholderConnection:
+    """Wraps PostgreSQL connection to standardise row dict factories and cursors."""
+    def __init__(self, conn):
+        self._conn = conn
+    def cursor(self):
+        cursor = self._conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        return PostgreSQLPlaceholderCursor(cursor)
+    def commit(self):
+        self._conn.commit()
+    def rollback(self):
+        self._conn.rollback()
+    def close(self):
+        self._conn.close()
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Returns database connection. Checks for DATABASE_URL to connect to PostgreSQL (Supabase)."""
+    if DATABASE_URL and PSYCOPG2_AVAILABLE:
+        conn = psycopg2.connect(DATABASE_URL)
+        return PostgreSQLPlaceholderConnection(conn)
+    else:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def init_db():
-    """Initialize the SQLite database and create the clients & messages tables if they don't exist."""
+    """Initialize database and create clients & messages tables. Supports both SQLite and PostgreSQL schemas."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            category TEXT,
-            status TEXT DEFAULT 'Active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone TEXT NOT NULL,
-            sender TEXT NOT NULL, -- 'client' or 'business'
-            message TEXT NOT NULL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            msg_id TEXT UNIQUE
-        )
-    """)
+    
+    if DATABASE_URL and PSYCOPG2_AVAILABLE:
+        # PostgreSQL schema
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id SERIAL PRIMARY KEY,
+                client_id VARCHAR(50) UNIQUE NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                phone VARCHAR(30) NOT NULL,
+                category VARCHAR(50),
+                status VARCHAR(20) DEFAULT 'Active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                phone VARCHAR(30) NOT NULL,
+                sender VARCHAR(20) NOT NULL,
+                message TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                msg_id VARCHAR(100) UNIQUE
+            )
+        """)
+    else:
+        # SQLite schema
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                category TEXT,
+                status TEXT DEFAULT 'Active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                sender TEXT NOT NULL, -- 'client' or 'business'
+                message TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                msg_id TEXT UNIQUE
+            )
+        """)
+        
     conn.commit()
     conn.close()
 
