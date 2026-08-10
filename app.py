@@ -415,7 +415,8 @@ with tab1:
         include_name_param = st.checkbox("Include Client Name as Body Parameter ({{1}})", value=True,
                                          help="Check this if your template has a body parameter {{1}} for personalization.")
     with col_p2:
-        st.markdown(" ") # alignment spacer
+        match_by_filename = st.checkbox("🎯 Targeted Dispatch (Match Filename with Client's Phone)", value=False,
+                                         help="Check this if you name your images with client phone numbers (e.g. 9876543210.png). The system will automatically map and send only the matching poster to each client.")
         
     # Send execution section
     if target_count > 0 and poster_files:
@@ -437,7 +438,8 @@ with tab1:
             start_time = time.time()
             
             # 1. Media caching (Upload images to Meta first in Live Mode)
-            cached_media_ids = []
+            # Map filenames to cached media IDs
+            cached_media_map = {}
             if send_mode == "Live WhatsApp Broadcast":
                 status_text.text("⚙️ Initializing: Caching daily poster(s) onto Meta Cloud API...")
                 for file in poster_files:
@@ -445,7 +447,7 @@ with tab1:
                         # Read file bytes
                         file_bytes = file.getvalue()
                         media_id = upload_image_to_meta(file_bytes, file.name, file.type)
-                        cached_media_ids.append(media_id)
+                        cached_media_map[file.name] = media_id
                         log_content += f"[{time.strftime('%H:%M:%S')}] Cached poster '{file.name}' to Meta Cloud. Media ID: {media_id}\n"
                         log_terminal.code(log_content, language="text", wrap_lines=True)
                     except Exception as e:
@@ -453,7 +455,8 @@ with tab1:
                         st.stop()
             else:
                 # Simulated Mode - fake IDs
-                cached_media_ids = [f"sim_media_id_{i}" for i in range(len(poster_files))]
+                for i, file in enumerate(poster_files):
+                    cached_media_map[file.name] = f"sim_media_id_{i}"
                 log_content += f"[{time.strftime('%H:%M:%S')}] Simulated caching for {len(poster_files)} poster(s) complete.\n"
                 log_terminal.code(log_content, language="text", wrap_lines=True)
             
@@ -468,11 +471,32 @@ with tab1:
                 c_name = row['Name']
                 c_phone = row['Phone']
                 
-                # Check for each poster uploaded
-                for img_idx, media_id in enumerate(cached_media_ids):
-                    poster_name = poster_files[img_idx].name
+                # Extract 10-digit number for phone number matching
+                short_phone = c_phone[-10:] if len(c_phone) >= 10 else c_phone
+                
+                if match_by_filename:
+                    # Filter poster files matching the client's phone number
+                    matched_files = []
+                    for file in poster_files:
+                        clean_name = os.path.splitext(file.name)[0]
+                        if (short_phone in clean_name) or (c_phone in clean_name):
+                            matched_files.append(file)
+                            
+                    if not matched_files:
+                        log_msg = f"[{time.strftime('%H:%M:%S')}] SKIPPED ⏭️ -> {c_name} ({c_phone}) | Reason: No matching poster filename found.\n"
+                        log_content += log_msg
+                        log_terminal.code(log_content, language="text", wrap_lines=True)
+                        continue
+                else:
+                    # Default: Send all files to all clients
+                    matched_files = poster_files
+                
+                # Check for each matched poster
+                for img_idx, file in enumerate(matched_files):
+                    poster_name = file.name
+                    media_id = cached_media_map[poster_name]
                     
-                    status_text.text(f"Sending Poster {img_idx+1}/{len(cached_media_ids)} to ({idx+1}/{target_count}): {c_name}...")
+                    status_text.text(f"Sending Poster {img_idx+1}/{len(matched_files)} to ({idx+1}/{target_count}): {c_name}...")
                     
                     if send_mode == "Live WhatsApp Broadcast":
                         res = send_whatsapp_template(

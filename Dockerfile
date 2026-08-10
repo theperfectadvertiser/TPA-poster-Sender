@@ -1,0 +1,35 @@
+# Use a lightweight, official Python image
+FROM python:3.12-slim
+
+# Prevent Python from writing .pyc files and buffer stdout
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Set workspace directory inside container
+WORKDIR /app
+
+# Install basic system build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    software-properties-common \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for extremely fast container dependency installation
+RUN pip install uv
+
+# Copy requirements and install python libraries
+COPY requirements.txt .
+RUN uv pip install --system -r requirements.txt
+
+# Copy the rest of the application files
+COPY . .
+
+# Expose standard Streamlit port
+EXPOSE 8501
+
+# Streamlit Health check
+HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health
+
+# Run Streamlit on container startup bound to all interfaces
+ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
