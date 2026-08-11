@@ -250,15 +250,11 @@ st.session_state["ACCESS_TOKEN"] = ACCESS_TOKEN
 st.session_state["TEMPLATE_NAME"] = TEMPLATE_NAME
 st.session_state["LANGUAGE_CODE"] = LANGUAGE_CODE
 
-# Save config.json for the webhook.py background process
-import json
+# Save credentials in Supabase settings table for the webhook.py background process
 try:
-    with open("config.json", "w") as config_file:
-        json.dump({
-            "PHONE_NUMBER_ID": PHONE_NUMBER_ID,
-            "WABA_ID": WABA_ID,
-            "ACCESS_TOKEN": ACCESS_TOKEN
-        }, config_file)
+    db.save_setting("PHONE_NUMBER_ID", PHONE_NUMBER_ID)
+    db.save_setting("WABA_ID", WABA_ID)
+    db.save_setting("ACCESS_TOKEN", ACCESS_TOKEN)
 except Exception:
     pass
 

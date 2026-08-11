@@ -13,14 +13,16 @@ app = Flask(__name__)
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "tpa_secure_verify_token_2026")
 
 def get_meta_credentials():
-    """Reads credentials written by app.py to dynamically query Meta endpoints."""
-    if os.path.exists("config.json"):
-        try:
-            with open("config.json", "r") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[ERROR] Failed to load config.json: {e}")
-    return {}
+    """Reads credentials from database settings to dynamically query Meta endpoints."""
+    try:
+        return {
+            "ACCESS_TOKEN": db.get_setting("ACCESS_TOKEN"),
+            "PHONE_NUMBER_ID": db.get_setting("PHONE_NUMBER_ID"),
+            "WABA_ID": db.get_setting("WABA_ID")
+        }
+    except Exception as e:
+        print(f"[ERROR] Failed to load credentials from DB settings: {e}")
+        return {}
 
 def download_whatsapp_media(media_id, filename):
     """Downloads binary media files from Meta Cloud API."""

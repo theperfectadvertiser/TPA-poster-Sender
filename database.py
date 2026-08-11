@@ -121,6 +121,12 @@ def init_db():
                 media_b64 TEXT
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key VARCHAR(100) PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
         # Migration: Add media_b64 if column doesn't exist
         try:
             cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_b64 TEXT")
@@ -149,6 +155,12 @@ def init_db():
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 msg_id TEXT UNIQUE,
                 media_b64 TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )
         """)
         # Migration: Add media_b64 if column doesn't exist
@@ -469,3 +481,36 @@ def get_conversations():
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
+
+def save_setting(key, value):
+    """Saves a configuration key-value pair to the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """INSERT INTO settings (key, value)
+               VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (key, value)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error saving setting {key}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_setting(key):
+    """Retrieves a configuration value by key from the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"Error getting setting {key}: {e}")
+        return None
+    finally:
+        conn.close()
