@@ -825,6 +825,47 @@ with tab3:
     st.subheader("💬 Two-way WhatsApp CRM Inbox")
     st.write("View incoming replies from clients in real-time and reply directly to open conversations.")
 
+    # WhatsApp Web Styling for Radio Buttons and Chat Thread
+    st.markdown("""
+        <style>
+        /* WhatsApp-like layout for chat list */
+        div[data-testid="stRadio"] > div[role="radiogroup"] {
+            gap: 8px !important;
+        }
+        div[data-testid="stRadio"] label {
+            background-color: #1e293b !important;
+            border: 1px solid #334155 !important;
+            border-radius: 12px !important;
+            padding: 12px 16px !important;
+            color: #e2e8f0 !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+            width: 100% !important;
+            margin-bottom: 2px !important;
+            display: block !important;
+        }
+        div[data-testid="stRadio"] label:hover {
+            background-color: #334155 !important;
+            border-color: #475569 !important;
+        }
+        /* Style the selected chat card */
+        div[data-testid="stRadio"] label:has(input:checked) {
+            background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
+            border-color: #14b8a6 !important;
+            color: #ffffff !important;
+            box-shadow: 0 4px 12px rgba(13, 148, 136, 0.3) !important;
+        }
+        /* Hide the default radio circle input */
+        div[data-testid="stRadio"] label input[type="radio"] {
+            display: none !important;
+        }
+        /* Remove extra padding from container */
+        div[data-testid="stRadio"] label div[class*="st-"] {
+            padding: 0 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     # Two-column layout
     col_chat_list, col_chat_window = st.columns([1, 2])
 
@@ -857,9 +898,19 @@ with tab3:
                 phone_map = {}
                 for idx, row in conversations.iterrows():
                     name = row['name'] if row['name'] else "Unknown Lead"
-                    # If last message was from client, show a red unread badge emoji
                     unread_badge = "🔴 " if row['sender'] == 'client' else ""
-                    label = f"{unread_badge}{name} ({row['phone']}) \n└─ {row['message'][:25]}..."
+                    
+                    # Clean the message preview for list layout
+                    msg_preview = str(row['message'])
+                    if msg_preview.startswith("📷 Incoming Image:"):
+                        msg_preview = "📷 Client Photo"
+                    elif msg_preview.startswith("🖼️ Sent Poster:"):
+                        msg_preview = "🖼️ Sent Poster"
+                    
+                    if len(msg_preview) > 22:
+                        msg_preview = msg_preview[:20] + "..."
+                        
+                    label = f"{unread_badge}👤 {name} ({row['phone']})\n💬 {msg_preview}"
                     options.append(label)
                     phone_map[label] = row['phone']
                 
@@ -894,10 +945,13 @@ with tab3:
                     sender = row['sender']
                     msg_text = row['message']
                     ts = row['timestamp']
+                    media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
                     
                     if sender == 'client':
                         # Received bubble (Slate-blue)
-                        if str(msg_text).startswith("📷 Incoming Image:"):
+                        if media_b64 and str(media_b64).strip():
+                            chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="data:image/png;base64,{media_b64}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
+                        elif str(msg_text).startswith("📷 Incoming Image:"):
                             incoming_name = str(msg_text).replace("📷 Incoming Image:", "").strip()
                             b64_in = get_image_base64(incoming_name)
                             if b64_in:

@@ -53,16 +53,36 @@ class PostgreSQLPlaceholderConnection:
     def __getattr__(self, name):
         return getattr(self._conn, name)
 
+def get_pg_pool_streamlit(db_url):
+    import streamlit as st
+    @st.cache_resource
+    def _create_pool(url):
+        import psycopg2.pool
+        return psycopg2.pool.ThreadedConnectionPool(1, 20, url)
+    return _create_pool(db_url)
+
 def get_db_connection():
     """Returns database connection. Checks for DATABASE_URL to connect to PostgreSQL (Supabase)."""
     global _connection_pool
     if DATABASE_URL and PSYCOPG2_AVAILABLE:
-        if _connection_pool is None:
-            # Initialize threaded connection pool: min=1, max=20
-            # Keeping connection alive removes TLS handshake delay
-            _connection_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, DATABASE_URL)
-        conn = _connection_pool.getconn()
-        return PostgreSQLPlaceholderConnection(conn, _connection_pool)
+        # Check if running inside Streamlit
+        is_streamlit = False
+        try:
+            from streamlit.runtime import exists
+            is_streamlit = exists()
+        except ImportError:
+            pass
+            
+        if is_streamlit:
+            pool = get_pg_pool_streamlit(DATABASE_URL)
+        else:
+            if _connection_pool is None:
+                import psycopg2.pool
+                _connection_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
+            pool = _connection_pool
+            
+        conn = pool.getconn()
+        return PostgreSQLPlaceholderConnection(conn, pool)
     else:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -97,9 +117,16 @@ def init_db():
                 sender VARCHAR(20) NOT NULL,
                 message TEXT NOT NULL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                msg_id VARCHAR(100) UNIQUE
+                msg_id VARCHAR(100) UNIQUE,
+                media_b64 TEXT
             )
         """)
+        # Migration: Add media_b64 if column doesn't exist
+        try:
+            cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_b64 TEXT")
+            conn.commit()
+        except Exception:
+            conn.rollback()
     else:
         # SQLite schema
         cursor.execute("""
@@ -120,9 +147,16 @@ def init_db():
                 sender TEXT NOT NULL, -- 'client' or 'business'
                 message TEXT NOT NULL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                msg_id TEXT UNIQUE
+                msg_id TEXT UNIQUE,
+                media_b64 TEXT
             )
         """)
+        # Migration: Add media_b64 if column doesn't exist
+        try:
+            cursor.execute("ALTER TABLE messages ADD COLUMN media_b64 TEXT")
+            conn.commit()
+        except Exception:
+            pass
         
     conn.commit()
     conn.close()
@@ -370,7 +404,7 @@ def bulk_import(df, default_country_code="91"):
         "failures": failed_records
     }
 
-def save_message(phone, sender, message, msg_id=None):
+def save_message(phone, sender, message, msg_id=None, media_b64=None):
     """Saves an incoming or outgoing chat message to the messages table."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -383,13 +417,14 @@ def save_message(phone, sender, message, msg_id=None):
             msg_id = f"local_{cleaned_phone}_{time.time()}"
             
         cursor.execute(
-            """INSERT INTO messages (phone, sender, message, msg_id)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO messages (phone, sender, message, msg_id, media_b64)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(msg_id) DO UPDATE SET
                    phone=excluded.phone,
                    sender=excluded.sender,
-                   message=excluded.message""",
-            (cleaned_phone, sender, message.strip(), msg_id)
+                   message=excluded.message,
+                   media_b64=excluded.media_b64""",
+            (cleaned_phone, sender, message.strip(), msg_id, media_b64)
         )
         conn.commit()
         return True
@@ -404,7 +439,7 @@ def get_messages_for_phone(phone):
     conn = get_db_connection()
     cleaned_phone = clean_phone_number(phone)
     query = """
-        SELECT sender, message, timestamp, msg_id 
+        SELECT sender, message, timestamp, msg_id, media_b64 
         FROM messages 
         WHERE phone = ? 
         ORDER BY timestamp ASC

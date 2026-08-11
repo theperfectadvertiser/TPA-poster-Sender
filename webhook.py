@@ -62,9 +62,80 @@ def download_whatsapp_media(media_id, filename):
         print(f"[ERROR] Media download crashed: {str(e)}")
         return False
 
+def get_whatsapp_media_base64(media_id):
+    """Downloads media from Meta Cloud API and returns its Base64 encoded string."""
+    creds = get_meta_credentials()
+    token = creds.get("ACCESS_TOKEN")
+    
+    if not token or token.startswith("YOUR_"):
+        print("[ERROR] Cannot download media: Access Token not configured or invalid.")
+        return None
+        
+    try:
+        # Step 1: Get media URL from Meta metadata
+        metadata_url = f"https://graph.facebook.com/v20.0/{media_id}"
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        res = requests.get(metadata_url, headers=headers)
+        if res.status_code != 200:
+            print(f"[ERROR] Failed to fetch media metadata: {res.text}")
+            return None
+            
+        media_url = res.json().get("url")
+        if not media_url:
+            return None
+            
+        # Step 2: Download binary data using media URL
+        media_res = requests.get(media_url, headers=headers)
+        if media_res.status_code == 200:
+            import base64
+            b64_str = base64.b64encode(media_res.content).decode("utf-8")
+            return b64_str
+        else:
+            print(f"[ERROR] Failed to download media bytes: {media_res.text}")
+            return None
+            
+    except Exception as e:
+        print(f"[ERROR] Base64 download crashed: {str(e)}")
+        return None
+
 @app.route("/", methods=["GET"])
 def home():
     return "TPA Webhook Server with Image Downloader is RUNNING!", 200
+
+@app.route("/debug-db", methods=["GET"])
+def debug_db():
+    creds = get_meta_credentials()
+    db_type = "PostgreSQL (Supabase)" if db.DATABASE_URL and db.PSYCOPG2_AVAILABLE else "SQLite (Local fallback)"
+    try:
+        conn = db.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM messages")
+        msg_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM clients")
+        client_count = cursor.fetchone()[0]
+        conn.close()
+        return jsonify({
+            "status": "connected",
+            "db_type": db_type,
+            "has_database_url": bool(db.DATABASE_URL),
+            "psycopg2_available": db.PSYCOPG2_AVAILABLE,
+            "message_count": msg_count,
+            "client_count": client_count,
+            "config_credentials": {
+                "has_token": bool(creds.get("ACCESS_TOKEN")),
+                "phone_id": creds.get("PHONE_NUMBER_ID"),
+                "waba_id": creds.get("WABA_ID")
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "db_type": db_type,
+            "error": str(e)
+        }), 500
+
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
@@ -130,8 +201,11 @@ def capture_message():
                             # Download the image file locally
                             download_success = download_whatsapp_media(image_id, filename)
                             
-                            # Save media message label to DB
-                            db.save_message(from_phone, "client", f"📷 Incoming Image: {filename}", msg_id)
+                            # Fetch base64 representation for shared cloud db sync
+                            media_b64 = get_whatsapp_media_base64(image_id)
+                            
+                            # Save media message label and base64 representation to DB
+                            db.save_message(from_phone, "client", f"📷 Incoming Image: {filename}", msg_id, media_b64=media_b64)
                             
                         else:
                             # Handle other types like documents, buttons, etc.
