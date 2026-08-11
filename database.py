@@ -11,9 +11,13 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 try:
     import psycopg2
     import psycopg2.extras
+    import psycopg2.pool
     PSYCOPG2_AVAILABLE = True
 except ImportError:
     PSYCOPG2_AVAILABLE = False
+
+_connection_pool = None
+_db_initialized = False
 
 class PostgreSQLPlaceholderCursor:
     """Wraps PostgreSQL cursor to translate SQLite '?' placeholders to '%s' dynamically."""
@@ -28,8 +32,9 @@ class PostgreSQLPlaceholderCursor:
 
 class PostgreSQLPlaceholderConnection:
     """Wraps PostgreSQL connection to standardise row dict factories and cursors."""
-    def __init__(self, conn):
+    def __init__(self, conn, pool=None):
         self._conn = conn
+        self._pool = pool
     def cursor(self):
         cursor = self._conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         return PostgreSQLPlaceholderCursor(cursor)
@@ -38,15 +43,26 @@ class PostgreSQLPlaceholderConnection:
     def rollback(self):
         self._conn.rollback()
     def close(self):
-        self._conn.close()
+        if self._pool is not None:
+            try:
+                self._pool.putconn(self._conn)
+            except Exception:
+                self._conn.close()
+        else:
+            self._conn.close()
     def __getattr__(self, name):
         return getattr(self._conn, name)
 
 def get_db_connection():
     """Returns database connection. Checks for DATABASE_URL to connect to PostgreSQL (Supabase)."""
+    global _connection_pool
     if DATABASE_URL and PSYCOPG2_AVAILABLE:
-        conn = psycopg2.connect(DATABASE_URL)
-        return PostgreSQLPlaceholderConnection(conn)
+        if _connection_pool is None:
+            # Initialize threaded connection pool: min=1, max=20
+            # Keeping connection alive removes TLS handshake delay
+            _connection_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, DATABASE_URL)
+        conn = _connection_pool.getconn()
+        return PostgreSQLPlaceholderConnection(conn, _connection_pool)
     else:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -54,6 +70,10 @@ def get_db_connection():
 
 def init_db():
     """Initialize database and create clients & messages tables. Supports both SQLite and PostgreSQL schemas."""
+    global _db_initialized
+    if _db_initialized:
+        return
+        
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -106,6 +126,7 @@ def init_db():
         
     conn.commit()
     conn.close()
+    _db_initialized = True
 
 def clean_phone_number(phone, default_country_code="91"):
     """
