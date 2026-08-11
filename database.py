@@ -203,7 +203,7 @@ def get_clients_dataframe(search_query="", category_filter="All", status_filter=
     """
     conn = get_db_connection()
     
-    query = "SELECT id, client_id as [Client ID], name as [Name], phone as [Phone], category as [Category], status as [Status], created_at as [Created At] FROM clients WHERE 1=1"
+    query = 'SELECT id, client_id as "Client ID", name as "Name", phone as "Phone", category as "Category", status as "Status", created_at as "Created At" FROM clients WHERE 1=1'
     params = []
     
     # Apply category filter
