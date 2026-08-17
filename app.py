@@ -8,6 +8,15 @@ import math
 import database as db
 import base64
 
+# --- STREAMLIT QUERY CACHING (Removes Supabase Network Latency) ---
+@st.cache_data(ttl=3)
+def cached_get_conversations():
+    return db.get_conversations()
+
+@st.cache_data(ttl=5)
+def cached_get_clients_dataframe(status_filter="Active"):
+    return db.get_clients_dataframe(status_filter=status_filter)
+
 def get_image_base64(filename):
     """Encodes a local file to base64 for direct browser embedding."""
     if os.path.exists(filename):
@@ -426,7 +435,7 @@ with tab1:
     
     # Metrics
     categories = db.get_unique_categories()
-    all_clients_df, total_registered = db.get_clients_dataframe(status_filter="Active")
+    all_clients_df, total_registered = cached_get_clients_dataframe(status_filter="Active")
     
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
@@ -462,7 +471,7 @@ with tab1:
         
     if target_type == "Select Single Client":
         # Get list of all clients
-        all_clients_list_df, _ = db.get_clients_dataframe(status_filter="Active")
+        all_clients_list_df, _ = cached_get_clients_dataframe(status_filter="Active")
         if all_clients_list_df.empty:
             st.error("No active clients found in database.")
             target_df = all_clients_list_df
@@ -920,10 +929,11 @@ with tab3:
         col_c_ref, col_c_spacer = st.columns([1, 2])
         with col_c_ref:
             if st.button("🔄 Refresh"):
+                st.cache_data.clear()
                 st.rerun()
                 
         try:
-            conversations = db.get_conversations()
+            conversations = cached_get_conversations()
             
             # Chat Search filter
             search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
@@ -1098,7 +1108,7 @@ with tab3:
                         selected_fw_text = msg_map[selected_fw_msg_lbl]
                     with col_fw2:
                         # Fetch active clients list
-                        all_clients_list_df, _ = db.get_clients_dataframe(status_filter="Active")
+                        all_clients_list_df, _ = cached_get_clients_dataframe(status_filter="Active")
                         client_options = ["Enter Custom Number..."]
                         client_phone_map = {}
                         for idx, r in all_clients_list_df.iterrows():

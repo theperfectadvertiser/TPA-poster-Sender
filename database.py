@@ -170,6 +170,14 @@ def init_db():
         except Exception:
             pass
         
+    # Create indexes for fast query execution (eliminates full table scan lookup delays)
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_phone ON messages (phone)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)")
+        conn.commit()
+    except Exception as e:
+        print(f"Error creating indexes: {e}")
+        
     conn.commit()
     conn.close()
     _db_initialized = True
@@ -446,14 +454,18 @@ def save_message(phone, sender, message, msg_id=None, media_b64=None):
     finally:
         conn.close()
 
-def get_messages_for_phone(phone):
-    """Retrieves all chat messages for a specific phone number (ordered by timestamp)."""
+def get_messages_for_phone(phone, limit=50):
+    """Retrieves the latest chat messages for a specific phone number (ordered by timestamp)."""
     conn = get_db_connection()
     cleaned_phone = clean_phone_number(phone)
-    query = """
-        SELECT sender, message, timestamp, msg_id, media_b64 
-        FROM messages 
-        WHERE phone = ? 
+    query = f"""
+        SELECT * FROM (
+            SELECT sender, message, timestamp, msg_id, media_b64 
+            FROM messages 
+            WHERE phone = ? 
+            ORDER BY timestamp DESC
+            LIMIT {limit}
+        ) sub
         ORDER BY timestamp ASC
     """
     df = pd.read_sql_query(query, conn, params=[cleaned_phone])
