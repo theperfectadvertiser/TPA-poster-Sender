@@ -514,3 +514,25 @@ def get_setting(key):
         return None
     finally:
         conn.close()
+
+def get_latest_incoming_message():
+    """Retrieves the single latest incoming message from a client."""
+    conn = get_db_connection()
+    try:
+        query = """
+            SELECT m.phone, m.message, m.timestamp, m.msg_id, c.name
+            FROM messages m
+            LEFT JOIN clients c ON m.phone = c.phone
+            WHERE m.sender = 'client'
+            ORDER BY m.timestamp DESC
+            LIMIT 1
+        """
+        df = pd.read_sql_query(query, conn)
+        if not df.empty:
+            return df.iloc[0].to_dict()
+        return None
+    except Exception as e:
+        print(f"Error getting latest incoming message: {e}")
+        return None
+    finally:
+        conn.close()
