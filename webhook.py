@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 import database as db
 import os
 import json
@@ -106,6 +106,22 @@ def get_whatsapp_media_base64(media_id):
 def home():
     return "TPA Webhook Server with Image Downloader is RUNNING!", 200
 
+@app.route("/media/<filename>", methods=["GET"])
+def serve_media(filename):
+    """Serves WhatsApp media files with on-demand self-healing download capability from Meta."""
+    if not os.path.exists(filename):
+        # Self-healing proxy: if the file was deleted or instance restarted, download it dynamically
+        if filename.startswith("incoming_") and filename.endswith(".png"):
+            media_id = filename.replace("incoming_", "").replace(".png", "")
+            print(f"[MEDIA PROXY] File {filename} not found. Fetching on-demand for media_id: {media_id}")
+            download_success = download_whatsapp_media(media_id, filename)
+            if not download_success:
+                return "Media not found on Meta API", 404
+        else:
+            return "File not found", 404
+            
+    return send_from_directory(".", filename)
+
 @app.route("/debug-db", methods=["GET"])
 def debug_db():
     creds = get_meta_credentials()
@@ -200,14 +216,17 @@ def capture_message():
                             
                             print(f"[INBOX] Incoming IMAGE from {contact_name} ({from_phone}). Attempting download...")
                             
-                            # Download the image file locally
+                            # Download the image file locally (for local execution compatibility)
                             download_success = download_whatsapp_media(image_id, filename)
                             
                             # Fetch base64 representation for shared cloud db sync
                             media_b64 = get_whatsapp_media_base64(image_id)
                             
-                            # Save media message label and base64 representation to DB
-                            db.save_message(from_phone, "client", f"📷 Incoming Image: {filename}", msg_id, media_b64=media_b64)
+                            # Construct public Render URL for the image
+                            public_media_url = f"https://tpa-poster-sender.onrender.com/media/{filename}"
+                            
+                            # Save media message details with public Render media URL and base64 representation to DB
+                            db.save_message(from_phone, "client", f"📷 Incoming Image: {public_media_url}", msg_id, media_b64=media_b64)
                             
                         else:
                             # Handle other types like documents, buttons, etc.
