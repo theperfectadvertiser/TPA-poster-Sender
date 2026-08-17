@@ -995,50 +995,47 @@ with tab3:
         try:
             msgs_df = db.get_messages_for_phone(phone)
             
-            # Chat bubbles HTML container
-            chat_html = '<div style="height: 480px; overflow-y: auto; padding: 20px; background-color: #0b0f19; border: 1px solid #1e293b; border-radius: 16px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px;">'
-            
-            for idx, row in msgs_df.iterrows():
-                sender = row['sender']
-                msg_text = row['message']
-                ts = row['timestamp']
-                media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
-                
-                if sender == 'client':
-                    # Received bubble (Slate-blue)
-                    if media_b64 and str(media_b64).strip():
-                        chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="data:image/png;base64,{media_b64}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
-                    elif str(msg_text).startswith("📷 Incoming Image:"):
-                        media_url = str(msg_text).replace("📷 Incoming Image:", "").strip()
-                        if media_url.startswith("http"):
-                            # If it's a public Render media URL, render it directly over HTTP
-                            chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="{media_url}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
-                        else:
-                            # Old local fallback
-                            b64_in = get_image_base64(media_url)
-                            if b64_in:
-                                chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="data:image/png;base64,{b64_in}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
+            # Using native Streamlit container with fixed height to prevent flickering and DOM resetting!
+            with st.container(height=480):
+                for idx, row in msgs_df.iterrows():
+                    sender = row['sender']
+                    msg_text = row['message']
+                    ts = str(row['timestamp']).split(".")[0] # Clean timestamp format
+                    media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
+                    
+                    if sender == 'client':
+                        with st.chat_message("user", avatar="👤"):
+                            if media_b64 and str(media_b64).strip():
+                                st.image(f"data:image/png;base64,{media_b64}", caption="📷 Client Image", use_container_width=True)
+                            elif str(msg_text).startswith("📷 Incoming Image:"):
+                                media_url = str(msg_text).replace("📷 Incoming Image:", "").strip()
+                                if media_url.startswith("http"):
+                                    st.image(media_url, caption="📷 Client Image", use_container_width=True)
+                                else:
+                                    b64_in = get_image_base64(media_url)
+                                    if b64_in:
+                                        st.image(f"data:image/png;base64,{b64_in}", caption="📷 Client Image", use_container_width=True)
+                                    else:
+                                        st.write(f"📷 Client Image: {media_url}")
                             else:
-                                chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">📷 Incoming Image: {media_url}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
+                                st.write(msg_text)
+                            st.caption(f"🕒 {ts}")
                     else:
-                        chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
-                else:
-                    # Sent bubble (Dark gray/Teal border)
-                    if str(msg_text).startswith("🖼️ Sent Poster:"):
-                        poster_name = str(msg_text).replace("🖼️ Sent Poster:", "").strip()
-                        b64 = get_image_base64(poster_name)
-                        if b64:
-                            chat_html += f'<div style="align-self: flex-end; max-width: 60%; background-color: #0f172a; border: 1px solid #0d9488; padding: 8px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><img src="data:image/png;base64,{b64}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">🖼️ {poster_name}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 4px; padding: 0 4px;">{ts} (You)</div></div>'
-                        else:
-                            chat_html += f'<div style="align-self: flex-end; max-width: 75%; background-color: #0f172a; border: 1px solid #0d9488; color: #2dd4bf; padding: 12px 16px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">🖼️ Sent Poster: {poster_name}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div></div>'
-                    else:
-                        chat_html += f'<div style="align-self: flex-end; max-width: 75%; background-color: #0f172a; border: 1px solid #0d9488; color: #2dd4bf; padding: 12px 16px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div></div>'
-            chat_html += '</div>'
-            st.markdown(chat_html, unsafe_allow_html=True)
+                        with st.chat_message("assistant", avatar="💼"):
+                            if str(msg_text).startswith("🖼️ Sent Poster:"):
+                                poster_name = str(msg_text).replace("🖼️ Sent Poster:", "").strip()
+                                b64 = get_image_base64(poster_name)
+                                if b64:
+                                    st.image(f"data:image/png;base64,{b64}", caption=poster_name, use_container_width=True)
+                                else:
+                                    st.write(f"🖼️ Sent Poster: {poster_name}")
+                            else:
+                                st.write(msg_text)
+                            st.caption(f"🕒 {ts} (You)")
         except Exception as e:
             st.error(f"Error loading chat bubbles: {e}")
 
-    # 2. Right column: chat window and direct reply
+    # 2. Right column: chat window, direct reply and forward panel
     with col_chat_window:
         if selected_phone:
             # Get client details
@@ -1072,6 +1069,69 @@ with tab3:
                             st.rerun()
                         else:
                             st.error(f"Failed to dispatch reply: {res['reason']}")
+                            
+            # Forward Message Panel (OUTSIDE fragment)
+            st.markdown("---")
+            st.markdown("##### ➡️ Forward Message to Another Client")
+            try:
+                # Load current message list for dropdown options
+                msgs_df = db.get_messages_for_phone(selected_phone)
+                msg_options = []
+                msg_map = {}
+                for idx, r in msgs_df.iterrows():
+                    sender_lbl = "Client" if r['sender'] == 'client' else "You"
+                    preview = str(r['message'])
+                    if preview.startswith("📷 Incoming Image:"):
+                        preview = "📷 Client Image"
+                    elif preview.startswith("🖼️ Sent Poster:"):
+                        preview = "🖼️ Sent Poster"
+                    if len(preview) > 35:
+                        preview = preview[:32] + "..."
+                    lbl = f"[{sender_lbl}] {preview}"
+                    msg_options.append(lbl)
+                    msg_map[lbl] = r['message']
+                    
+                if msg_options:
+                    col_fw1, col_fw2 = st.columns([1.5, 1])
+                    with col_fw1:
+                        selected_fw_msg_lbl = st.selectbox("Select Message to Forward", msg_options, key=f"fw_msg_sel_{selected_phone}", label_visibility="collapsed")
+                        selected_fw_text = msg_map[selected_fw_msg_lbl]
+                    with col_fw2:
+                        # Fetch active clients list
+                        all_clients_list_df, _ = db.get_clients_dataframe(status_filter="Active")
+                        client_options = ["Enter Custom Number..."]
+                        client_phone_map = {}
+                        for idx, r in all_clients_list_df.iterrows():
+                            if r['Phone'] != selected_phone:
+                                lbl = f"👤 {r['Name']} ({r['Phone']})"
+                                client_options.append(lbl)
+                                client_phone_map[lbl] = r['Phone']
+                                
+                        selected_fw_target = st.selectbox("Forward Target Number", client_options, key=f"fw_target_sel_{selected_phone}", label_visibility="collapsed")
+                        if selected_fw_target == "Enter Custom Number...":
+                            fw_target_phone = st.text_input("Enter Target Phone", placeholder="e.g. 919876543210", key=f"fw_phone_custom_{selected_phone}", label_visibility="collapsed")
+                        else:
+                            fw_target_phone = client_phone_map[selected_fw_target]
+                            
+                    col_fbtn, _ = st.columns([1, 2])
+                    with col_fbtn:
+                        if st.button("➡️ Forward Now", key=f"fw_btn_{selected_phone}", use_container_width=True):
+                            if fw_target_phone:
+                                with st.spinner("Forwarding message..."):
+                                    res = send_direct_message(fw_target_phone, f"[Forwarded] {selected_fw_text}")
+                                    if res["status"] == "SUCCESS":
+                                        db.save_message(fw_target_phone, "business", f"[Forwarded] {selected_fw_text}", res["message_id"])
+                                        st.success(f"Forwarded successfully to {fw_target_phone}!")
+                                        time.sleep(1.0)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed to forward: {res['reason']}")
+                            else:
+                                st.warning("Please specify a target phone number.")
+                else:
+                    st.info("No messages in this chat to forward.")
+            except Exception as e:
+                st.error(f"Error loading forward menu: {e}")
         else:
             st.info("👈 Select a conversation thread from the list to view chat and reply.")
 
