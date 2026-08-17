@@ -907,9 +907,73 @@ with tab3:
         </style>
     """, unsafe_allow_html=True)
 
-    # Real-time auto-refreshing fragment for the Inbox
-    @st.fragment(run_every=3)
-    def render_live_chat_inbox_realtime():
+    # Two-column layout
+    col_chat_list, col_chat_window = st.columns([1, 2])
+
+    selected_phone = st.session_state.get("selected_phone", None)
+
+    # 1. Left column: conversations list (OUTSIDE the fragment, so 100% stable!)
+    with col_chat_list:
+        st.markdown("#### Recent Conversations")
+        
+        # Inbox Controls
+        col_c_ref, col_c_spacer = st.columns([1, 2])
+        with col_c_ref:
+            if st.button("🔄 Refresh"):
+                st.rerun()
+                
+        try:
+            conversations = db.get_conversations()
+            
+            # Chat Search filter
+            search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
+            if search_chat and not conversations.empty:
+                conversations = conversations[
+                    conversations['name'].str.contains(search_chat, case=False, na=False) |
+                    conversations['phone'].str.contains(search_chat, case=False, na=False)
+                ]
+                
+            if conversations.empty:
+                st.info("No matching conversations found.")
+            else:
+                options = []
+                phone_map = {}
+                default_index = 0
+                for idx, row in conversations.reset_index(drop=True).iterrows():
+                    name = row['name'] if row['name'] else "Unknown Lead"
+                    unread_badge = "🔴 " if row['sender'] == 'client' else ""
+                    
+                    # Clean the message preview for list layout
+                    msg_preview = str(row['message'])
+                    if msg_preview.startswith("📷 Incoming Image:"):
+                        msg_preview = "📷 Client Photo"
+                    elif msg_preview.startswith("🖼️ Sent Poster:"):
+                        msg_preview = "🖼️ Sent Poster"
+                    
+                    if len(msg_preview) > 22:
+                        msg_preview = msg_preview[:20] + "..."
+                        
+                    label = f"{unread_badge}👤 {name} ({row['phone']})\n💬 {msg_preview}"
+                    options.append(label)
+                    phone_map[label] = row['phone']
+                    
+                    if selected_phone and row['phone'] == selected_phone:
+                        default_index = idx
+                        
+                # Ensure index is within bounds
+                if default_index >= len(options):
+                    default_index = 0
+                    
+                selected_label = st.radio("Select Chat", options, index=default_index, label_visibility="collapsed")
+                if selected_label:
+                    selected_phone = phone_map[selected_label]
+                    st.session_state["selected_phone"] = selected_phone
+        except Exception as e:
+            st.error(f"Error loading conversations: {e}")
+
+    # Helper function decorated with st.fragment to auto-refresh the messages list in real-time
+    @st.fragment(run_every=2)
+    def render_chat_bubbles_realtime(phone):
         # Check for new messages to display st.toast notification!
         try:
             latest_incoming = db.get_latest_incoming_message()
@@ -921,161 +985,95 @@ with tab3:
                     sender_name = latest_incoming["name"] or "WhatsApp Contact"
                     st.toast(f"🔔 New message from {sender_name}: {latest_incoming['message'][:40]}...", icon="💬")
                     st.session_state["last_seen_incoming_msg_id"] = latest_incoming["msg_id"]
+                    # If the message is from a different contact, rerun the whole page to update the unread dot in the list!
+                    if latest_incoming["phone"] != phone:
+                        st.rerun()
         except Exception:
             pass
 
-        # Two-column layout
-        col_chat_list, col_chat_window = st.columns([1, 2])
-
-        # 1. Left column: conversations list
-        selected_phone = st.session_state.get("selected_phone", None)
-        with col_chat_list:
-            st.markdown("#### Recent Conversations")
+        # Retrieve messages for this phone number
+        try:
+            msgs_df = db.get_messages_for_phone(phone)
             
-            # Inbox Controls
-            col_c_ref, col_c_spacer = st.columns([1, 2])
-            with col_c_ref:
-                if st.button("🔄 Refresh"):
-                    st.rerun()
-                    
-            try:
-                conversations = db.get_conversations()
+            # Chat bubbles HTML container
+            chat_html = '<div style="height: 480px; overflow-y: auto; padding: 20px; background-color: #0b0f19; border: 1px solid #1e293b; border-radius: 16px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px;">'
+            
+            for idx, row in msgs_df.iterrows():
+                sender = row['sender']
+                msg_text = row['message']
+                ts = row['timestamp']
+                media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
                 
-                # Chat Search filter
-                search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
-                if search_chat and not conversations.empty:
-                    conversations = conversations[
-                        conversations['name'].str.contains(search_chat, case=False, na=False) |
-                        conversations['phone'].str.contains(search_chat, case=False, na=False)
-                    ]
-                    
-                if conversations.empty:
-                    st.info("No matching conversations found.")
-                else:
-                    options = []
-                    phone_map = {}
-                    default_index = 0
-                    for idx, row in conversations.reset_index(drop=True).iterrows():
-                        name = row['name'] if row['name'] else "Unknown Lead"
-                        unread_badge = "🔴 " if row['sender'] == 'client' else ""
-                        
-                        # Clean the message preview for list layout
-                        msg_preview = str(row['message'])
-                        if msg_preview.startswith("📷 Incoming Image:"):
-                            msg_preview = "📷 Client Photo"
-                        elif msg_preview.startswith("🖼️ Sent Poster:"):
-                            msg_preview = "🖼️ Sent Poster"
-                        
-                        if len(msg_preview) > 22:
-                            msg_preview = msg_preview[:20] + "..."
-                            
-                        label = f"{unread_badge}👤 {name} ({row['phone']})\n💬 {msg_preview}"
-                        options.append(label)
-                        phone_map[label] = row['phone']
-                        
-                        if selected_phone and row['phone'] == selected_phone:
-                            default_index = idx
-                            
-                    # Ensure index is within bounds
-                    if default_index >= len(options):
-                        default_index = 0
-                        
-                    selected_label = st.radio("Select Chat", options, index=default_index, label_visibility="collapsed")
-                    if selected_label:
-                        selected_phone = phone_map[selected_label]
-                        st.session_state["selected_phone"] = selected_phone
-            except Exception as e:
-                st.error(f"Error loading conversations: {e}")
-
-        # 2. Right column: chat window and direct reply
-        with col_chat_window:
-            if selected_phone:
-                # Get client details
-                client_name = "Unknown Client"
-                try:
-                    client_info, count = db.get_clients_dataframe(search_query=selected_phone)
-                    if count > 0:
-                        client_name = client_info.iloc[0]['Name']
-                except Exception as e:
-                    pass
-                    
-                st.markdown(f"#### Conversation with: **{client_name}** (`{selected_phone}`)")
-                
-                # Retrieve messages for this phone number
-                try:
-                    msgs_df = db.get_messages_for_phone(selected_phone)
-                    
-                    # Chat bubbles HTML container (written in a single line string to avoid markdown code formatting)
-                    chat_html = '<div style="height: 480px; overflow-y: auto; padding: 20px; background-color: #0b0f19; border: 1px solid #1e293b; border-radius: 16px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px;">'
-                    
-                    for idx, row in msgs_df.iterrows():
-                        sender = row['sender']
-                        msg_text = row['message']
-                        ts = row['timestamp']
-                        media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
-                        
-                        if sender == 'client':
-                            # Received bubble (Slate-blue)
-                            if media_b64 and str(media_b64).strip():
-                                chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="data:image/png;base64,{media_b64}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
-                            elif str(msg_text).startswith("📷 Incoming Image:"):
-                                media_url = str(msg_text).replace("📷 Incoming Image:", "").strip()
-                                if media_url.startswith("http"):
-                                    # If it's a public Render media URL, render it directly over HTTP
-                                    chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="{media_url}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
-                                else:
-                                    # Old local fallback
-                                    b64_in = get_image_base64(media_url)
-                                    if b64_in:
-                                        chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="data:image/png;base64,{b64_in}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
-                                    else:
-                                        chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">📷 Incoming Image: {media_url}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
-                            else:
-                                chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
+                if sender == 'client':
+                    # Received bubble (Slate-blue)
+                    if media_b64 and str(media_b64).strip():
+                        chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="data:image/png;base64,{media_b64}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
+                    elif str(msg_text).startswith("📷 Incoming Image:"):
+                        media_url = str(msg_text).replace("📷 Incoming Image:", "").strip()
+                        if media_url.startswith("http"):
+                            # If it's a public Render media URL, render it directly over HTTP
+                            chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="{media_url}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
                         else:
-                            # Sent bubble (Dark gray/Teal border)
-                            # Check if this is a Sent Poster image type message
-                            if str(msg_text).startswith("🖼️ Sent Poster:"):
-                                poster_name = str(msg_text).replace("🖼️ Sent Poster:", "").strip()
-                                b64 = get_image_base64(poster_name)
-                                
-                                if b64:
-                                    # Show actual image bubble
-                                    chat_html += f'<div style="align-self: flex-end; max-width: 60%; background-color: #0f172a; border: 1px solid #0d9488; padding: 8px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><img src="data:image/png;base64,{b64}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">🖼️ {poster_name}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 4px; padding: 0 4px;">{ts} (You)</div></div>'
-                                else:
-                                    # Fallback if image file is not on the server
-                                    chat_html += f'<div style="align-self: flex-end; max-width: 75%; background-color: #0f172a; border: 1px solid #0d9488; color: #2dd4bf; padding: 12px 16px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">🖼️ Sent Poster: {poster_name}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div></div>'
+                            # Old local fallback
+                            b64_in = get_image_base64(media_url)
+                            if b64_in:
+                                chat_html += f'<div style="align-self: flex-start; max-width: 60%; background-color: #1e293b; padding: 8px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><img src="data:image/png;base64,{b64_in}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">📷 Client Image</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 4px; padding: 0 4px;">{ts}</div></div>'
                             else:
-                                # Standard text bubble
-                                chat_html += f'<div style="align-self: flex-end; max-width: 75%; background-color: #0f172a; border: 1px solid #0d9488; color: #2dd4bf; padding: 12px 16px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div></div>'
-                    chat_html += '</div>'
-                    st.markdown(chat_html, unsafe_allow_html=True)
-                    
-                except Exception as e:
-                    st.error(f"Error loading chat bubbles: {e}")
-                    
-                # Reply Input Form
-                with st.form(key=f"reply_form_{selected_phone}", clear_on_submit=True):
-                    reply_text = st.text_area("Write reply...", placeholder="Type a message to reply...", label_visibility="collapsed")
-                    col_sbtn, _ = st.columns([1, 2])
-                    with col_sbtn:
-                        submit_reply = st.form_submit_button("📤 Send Direct Reply", use_container_width=True)
-                        
-                    if submit_reply and reply_text.strip():
-                        with st.spinner("Sending message..."):
-                            res = send_direct_message(selected_phone, reply_text)
-                            if res["status"] == "SUCCESS":
-                                # Save reply to database
-                                db.save_message(selected_phone, "business", reply_text, res["message_id"])
-                                st.success("Reply dispatched successfully!")
-                                st.rerun()
-                            else:
-                                st.error(f"Failed to dispatch reply: {res['reason']}")
-            else:
-                st.info("👈 Select a conversation thread from the list to view chat and reply.")
+                                chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">📷 Incoming Image: {media_url}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
+                    else:
+                        chat_html += f'<div style="align-self: flex-start; max-width: 75%; background-color: #1e293b; color: #f1f5f9; padding: 12px 16px; border-radius: 16px 16px 16px 4px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 4px;"><div style="font-size: 14px; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">{ts}</div></div>'
+                else:
+                    # Sent bubble (Dark gray/Teal border)
+                    if str(msg_text).startswith("🖼️ Sent Poster:"):
+                        poster_name = str(msg_text).replace("🖼️ Sent Poster:", "").strip()
+                        b64 = get_image_base64(poster_name)
+                        if b64:
+                            chat_html += f'<div style="align-self: flex-end; max-width: 60%; background-color: #0f172a; border: 1px solid #0d9488; padding: 8px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><img src="data:image/png;base64,{b64}" style="width: 100%; border-radius: 12px; display: block; margin-bottom: 6px;" /><div style="font-size: 11px; color: #94a3b8; padding: 0 4px;">🖼️ {poster_name}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 4px; padding: 0 4px;">{ts} (You)</div></div>'
+                        else:
+                            chat_html += f'<div style="align-self: flex-end; max-width: 75%; background-color: #0f172a; border: 1px solid #0d9488; color: #2dd4bf; padding: 12px 16px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">🖼️ Sent Poster: {poster_name}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div></div>'
+                    else:
+                        chat_html += f'<div style="align-self: flex-end; max-width: 75%; background-color: #0f172a; border: 1px solid #0d9488; color: #2dd4bf; padding: 12px 16px; border-radius: 16px 16px 4px 16px; box-shadow: 0 4px 10px rgba(13, 148, 136, 0.15); margin-bottom: 4px;"><div style="font-size: 14px; color: #f1f5f9; font-weight: 500; line-height: 1.4;">{msg_text}</div><div style="font-size: 10px; color: #0d9488; text-align: right; margin-top: 6px;">{ts} (You)</div></div>'
+            chat_html += '</div>'
+            st.markdown(chat_html, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"Error loading chat bubbles: {e}")
 
-    # Execute the realtime chat fragment
-    render_live_chat_inbox_realtime()
+    # 2. Right column: chat window and direct reply
+    with col_chat_window:
+        if selected_phone:
+            # Get client details
+            client_name = "Unknown Client"
+            try:
+                client_info, count = db.get_clients_dataframe(search_query=selected_phone)
+                if count > 0:
+                    client_name = client_info.iloc[0]['Name']
+            except Exception as e:
+                pass
+                
+            st.markdown(f"#### Conversation with: **{client_name}** (`{selected_phone}`)")
+            
+            # Render the realtime chat bubbles fragment (Auto-refreshes every 2 seconds without flickering!)
+            render_chat_bubbles_realtime(selected_phone)
+            
+            # Reply Input Form (OUTSIDE the fragment, so typing is 100% stable!)
+            with st.form(key=f"reply_form_{selected_phone}", clear_on_submit=True):
+                reply_text = st.text_area("Write reply...", placeholder="Type a message to reply...", label_visibility="collapsed")
+                col_sbtn, _ = st.columns([1, 2])
+                with col_sbtn:
+                    submit_reply = st.form_submit_button("📤 Send Direct Reply", use_container_width=True)
+                    
+                if submit_reply and reply_text.strip():
+                    with st.spinner("Sending message..."):
+                        res = send_direct_message(selected_phone, reply_text)
+                        if res["status"] == "SUCCESS":
+                            # Save reply to database
+                            db.save_message(selected_phone, "business", reply_text, res["message_id"])
+                            st.success("Reply dispatched successfully!")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to dispatch reply: {res['reason']}")
+        else:
+            st.info("👈 Select a conversation thread from the list to view chat and reply.")
 
 # --- TAB 4: SETTINGS & DEV SANDBOX ---
 with tab4:
