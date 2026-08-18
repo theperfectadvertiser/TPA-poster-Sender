@@ -472,14 +472,23 @@ def get_messages_for_phone(phone, limit=50):
     conn.close()
     return df
 
-def get_conversations():
+def get_conversations(search_query=None, limit=50):
     """
     Retrieves unique conversations (recent messages grouped by phone).
-    Joins with the clients table to retrieve the client name if available.
+    Optionally filters by name/phone in the database, and limits results for speed.
     """
     conn = get_db_connection()
-    # Query to fetch last message for each unique phone number
-    query = """
+    
+    # Build search condition
+    search_cond = ""
+    params = []
+    if search_query:
+        cleaned_q = f"%{search_query}%"
+        # Support both SQLite and PostgreSQL placeholder types
+        search_cond = "WHERE (m.phone LIKE ? OR COALESCE(c.name, '') LIKE ?)"
+        params = [cleaned_q, cleaned_q]
+        
+    query = f"""
         SELECT m.phone, m.sender, m.message, m.timestamp, c.name
         FROM messages m
         LEFT JOIN clients c ON m.phone = c.phone
@@ -488,9 +497,11 @@ def get_conversations():
             FROM messages
             GROUP BY phone
         ) last_msgs ON m.phone = last_msgs.phone AND m.timestamp = last_msgs.max_ts
+        {search_cond}
         ORDER BY m.timestamp DESC
+        LIMIT {limit}
     """
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
 

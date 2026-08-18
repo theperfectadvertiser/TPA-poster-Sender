@@ -477,13 +477,13 @@ with tab1:
             target_df = all_clients_list_df
             target_count = 0
         else:
-            # Create a label for each client: "Name (Phone) - Category"
-            client_options = []
-            client_phone_map = {}
-            for idx, r in all_clients_list_df.iterrows():
-                lbl = f"👤 {r['Name']} ({r['Phone']}) - {r['Category']}"
-                client_options.append(lbl)
-                client_phone_map[lbl] = r['Phone']
+            # Vectorized list creation (extremely fast, avoids iterrows lag on 3000+ rows)
+            client_options = (
+                "👤 " + all_clients_list_df['Name'].astype(str) + 
+                " (" + all_clients_list_df['Phone'].astype(str) + ") - " + 
+                all_clients_list_df['Category'].astype(str)
+            ).tolist()
+            client_phone_map = dict(zip(client_options, all_clients_list_df['Phone']))
             
             selected_client_lbl = st.selectbox("Select Target Client", client_options)
             selected_phone_num = client_phone_map[selected_client_lbl]
@@ -534,6 +534,9 @@ with tab1:
         st.warning(f"⚠️ **Action Ready:** {confirm_text}")
         
         if st.button("🚀 EXECUTE WhatsApp BROADCAST NOW", type="primary", use_container_width=True):
+            # Reset index to guarantee contiguous 0-based idx in loop for progress calculation
+            target_df = target_df.reset_index(drop=True)
+            
             progress_bar = st.progress(0)
             status_text = st.empty()
             log_terminal = st.empty()
@@ -932,16 +935,14 @@ with tab3:
                 st.cache_data.clear()
                 st.rerun()
                 
+        # Chat Search filter
+        search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
+        
         try:
-            conversations = cached_get_conversations()
-            
-            # Chat Search filter
-            search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
-            if search_chat and not conversations.empty:
-                conversations = conversations[
-                    conversations['name'].str.contains(search_chat, case=False, na=False) |
-                    conversations['phone'].str.contains(search_chat, case=False, na=False)
-                ]
+            if search_chat:
+                conversations = db.get_conversations(search_query=search_chat, limit=50)
+            else:
+                conversations = cached_get_conversations()
                 
             if conversations.empty:
                 st.info("No matching conversations found.")
@@ -1111,11 +1112,15 @@ with tab3:
                         all_clients_list_df, _ = cached_get_clients_dataframe(status_filter="Active")
                         client_options = ["Enter Custom Number..."]
                         client_phone_map = {}
-                        for idx, r in all_clients_list_df.iterrows():
-                            if r['Phone'] != selected_phone:
-                                lbl = f"👤 {r['Name']} ({r['Phone']})"
-                                client_options.append(lbl)
-                                client_phone_map[lbl] = r['Phone']
+                        if not all_clients_list_df.empty:
+                            filtered_df = all_clients_list_df[all_clients_list_df['Phone'] != selected_phone]
+                            if not filtered_df.empty:
+                                options_list = (
+                                    "👤 " + filtered_df['Name'].astype(str) + 
+                                    " (" + filtered_df['Phone'].astype(str) + ")"
+                                ).tolist()
+                                client_options.extend(options_list)
+                                client_phone_map.update(dict(zip(options_list, filtered_df['Phone'])))
                                 
                         selected_fw_target = st.selectbox("Forward Target Number", client_options, key=f"fw_target_sel_{selected_phone}", label_visibility="collapsed")
                         if selected_fw_target == "Enter Custom Number...":
