@@ -174,6 +174,8 @@ def init_db():
     try:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_phone ON messages (phone)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_phone_ts ON messages (phone, timestamp DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_ts ON messages (sender, timestamp DESC)")
         conn.commit()
     except Exception as e:
         print(f"Error creating indexes: {e}")

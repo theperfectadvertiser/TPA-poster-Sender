@@ -92,6 +92,42 @@ st.markdown("""
     .stAlert {
         border-radius: 12px !important;
     }
+    
+    /* Mobile Responsive Optimizations (Fluid layout overrides) */
+    @media (max-width: 768px) {
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
+            font-size: 1.4rem !important;
+            margin-bottom: 0.5rem !important;
+        }
+        .main .block-container {
+            padding-left: 8px !important;
+            padding-right: 8px !important;
+            padding-top: 12px !important;
+        }
+        div[data-testid="stTabBar"] {
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+            display: flex !important;
+            flex-wrap: nowrap !important;
+        }
+        div[data-testid="stTabBar"] button {
+            padding: 6px 10px !important;
+            font-size: 13px !important;
+            flex-shrink: 0 !important;
+        }
+        div[data-testid="stChatMessage"] {
+            padding: 6px 10px !important;
+            margin-bottom: 6px !important;
+            border-radius: 12px !important;
+        }
+        /* Mobile-friendly spacing */
+        div[data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 auto !important;
+            margin-bottom: 12px !important;
+        }
+    }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -790,55 +826,64 @@ with tab2:
     # 3. Edit / Delete Client
     with action_tabs[2]:
         st.markdown("### Edit or Delete Client")
-        st.write("Search and edit single records here.")
         
-        # Load all clients for dropdown select
-        all_edit_df, _ = db.get_clients_dataframe(status_filter="All")
-        if not all_edit_df.empty:
-            # Create labels
-            client_options = []
-            client_map = {}
-            for idx, row in all_edit_df.iterrows():
-                db_id = row['id']
-                label = f"{row['Client ID']} - {row['Name']} ({row['Phone']})"
-                client_options.append(label)
-                client_map[label] = row
-                
-            selected_label = st.selectbox("Select Client to Modify", client_options)
+        # Search client before editing (avoids loading 3000+ rows into selectbox at once)
+        search_edit = st.text_input("🔍 Search Client to Edit (Name, ID or Phone)", key="search_edit_input")
+        
+        if search_edit.strip():
+            # Query matching clients from database (limit 10 for super fast dropdown rendering)
+            all_edit_df, _ = db.get_clients_dataframe(search_query=search_edit.strip(), status_filter="All", limit=10)
             
-            if selected_label:
-                selected_row = client_map[selected_label]
+            if not all_edit_df.empty:
+                # Vectorized label creation (0.1ms execution)
+                client_options = (
+                    all_edit_df['Client ID'].astype(str) + " - " +
+                    all_edit_df['Name'].astype(str) + " (" +
+                    all_edit_df['Phone'].astype(str) + ")"
+                ).tolist()
+                client_map = dict(zip(client_options, all_edit_df.to_dict('records')))
                 
-                with st.form("edit_client_form"):
-                    col_e1, col_e2 = st.columns(2)
-                    with col_e1:
-                        edit_id = st.text_input("Client ID", value=selected_row["Client ID"])
-                        edit_name = st.text_input("Name", value=selected_row["Name"])
-                    with col_e2:
-                        edit_phone = st.text_input("Phone Number", value=selected_row["Phone"])
-                        edit_cat = st.text_input("Category", value=selected_row["Category"])
-                        edit_status = st.selectbox("Status", ["Active", "Inactive"], index=0 if selected_row["Status"] == "Active" else 1)
-                        
-                    col_b1, col_b2 = st.columns(2)
-                    with col_b1:
-                        edit_submitted = st.form_submit_button("Update Client Records", type="primary")
-                    with col_b2:
-                        delete_submitted = st.form_submit_button("🚨 DELETE CLIENT PERMANENTLY")
-                        
-                    if edit_submitted:
-                        try:
-                            db.update_client(selected_row["id"], edit_id, edit_name, edit_phone, edit_cat, edit_status, DEFAULT_COUNTRY_CODE)
-                            st.success(f"✅ Successfully updated client '{edit_name}'!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error updating client: {str(e)}")
+                selected_label = st.selectbox("Select Client to Modify", client_options, key="select_client_modify_box")
+                
+                if selected_label:
+                    selected_row = client_map[selected_label]
+                    
+                    with st.form("edit_client_form"):
+                        col_e1, col_e2 = st.columns(2)
+                        with col_e1:
+                            edit_id = st.text_input("Client ID", value=selected_row["Client ID"])
+                            edit_name = st.text_input("Name", value=selected_row["Name"])
+                        with col_e2:
+                            edit_phone = st.text_input("Phone Number", value=selected_row["Phone"])
+                            edit_cat = st.text_input("Category", value=selected_row["Category"])
+                            edit_status = st.selectbox("Status", ["Active", "Inactive"], index=0 if selected_row["Status"] == "Active" else 1)
                             
-                    if delete_submitted:
-                        db.delete_clients([selected_row["id"]])
-                        st.success(f"🗑️ Client '{edit_name}' deleted permanently.")
-                        st.rerun()
+                        col_b1, col_b2 = st.columns(2)
+                        with col_b1:
+                            edit_submitted = st.form_submit_button("Update Client Records", type="primary")
+                        with col_b2:
+                            delete_submitted = st.form_submit_button("🚨 DELETE CLIENT PERMANENTLY")
+                            
+                        if edit_submitted:
+                            try:
+                                db.update_client(selected_row["id"], edit_id, edit_name, edit_phone, edit_cat, edit_status, DEFAULT_COUNTRY_CODE)
+                                st.success(f"✅ Successfully updated client '{edit_name}'!")
+                                st.cache_data.clear() # Clear cache to show edits instantly in the list
+                                time.sleep(0.5)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error updating client: {str(e)}")
+                                
+                        if delete_submitted:
+                            db.delete_clients([selected_row["id"]])
+                            st.success(f"🗑️ Client '{edit_name}' deleted permanently.")
+                            st.cache_data.clear() # Clear cache to reflect deletion
+                            time.sleep(0.5)
+                            st.rerun()
+            else:
+                st.info("No matching records found. Try another search query.")
         else:
-            st.info("No records in database to edit.")
+            st.info("💡 Type a name, ID, or phone number in the search box above to search and edit client details.")
 
     # 4. Database Actions
     with action_tabs[3]:
@@ -849,19 +894,22 @@ with tab2:
             st.markdown("#### export Database")
             st.write("Export and download your database backup to Excel or CSV.")
             
-            full_db_df, _ = db.get_clients_dataframe(status_filter="All")
-            if not full_db_df.empty:
-                # CSV Export
-                export_csv = full_db_df.drop(columns=["id"]).to_csv(index=False)
-                st.download_button(
-                    label="📥 Export Full Database to CSV",
-                    data=export_csv,
-                    file_name="tpa_clients_backup.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            else:
-                st.info("Database is empty, nothing to export.")
+            show_export = st.checkbox("Prepare Database Export Data", key="chk_prepare_export")
+            if show_export:
+                with st.spinner("Downloading full database records..."):
+                    full_db_df, _ = db.get_clients_dataframe(status_filter="All")
+                if not full_db_df.empty:
+                    # CSV Export
+                    export_csv = full_db_df.drop(columns=["id"]).to_csv(index=False)
+                    st.download_button(
+                        label="📥 Export Full Database to CSV",
+                        data=export_csv,
+                        file_name="tpa_clients_backup.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                else:
+                    st.info("Database is empty, nothing to export.")
                 
         with col_u2:
             st.markdown("#### 🚨 Dangerous Area")
@@ -985,23 +1033,6 @@ with tab3:
     # Helper function decorated with st.fragment to auto-refresh the messages list in real-time
     @st.fragment(run_every=2)
     def render_chat_bubbles_realtime(phone):
-        # Check for new messages to display st.toast notification!
-        try:
-            latest_incoming = db.get_latest_incoming_message()
-            if latest_incoming:
-                # If we don't have last_seen_incoming_msg_id set, initialize it
-                if "last_seen_incoming_msg_id" not in st.session_state:
-                    st.session_state["last_seen_incoming_msg_id"] = latest_incoming["msg_id"]
-                elif st.session_state["last_seen_incoming_msg_id"] != latest_incoming["msg_id"]:
-                    sender_name = latest_incoming["name"] or "WhatsApp Contact"
-                    st.toast(f"🔔 New message from {sender_name}: {latest_incoming['message'][:40]}...", icon="💬")
-                    st.session_state["last_seen_incoming_msg_id"] = latest_incoming["msg_id"]
-                    # If the message is from a different contact, rerun the whole page to update the unread dot in the list!
-                    if latest_incoming["phone"] != phone:
-                        st.rerun()
-        except Exception:
-            pass
-
         # Retrieve messages for this phone number
         try:
             msgs_df = db.get_messages_for_phone(phone)
@@ -1215,3 +1246,22 @@ with tab4:
     - Media uploaded to Meta Cloud servers remains cached for exactly **30 days**.
     - Phone number strings must follow E.164 standards: only digits, starting with country code (no leading `+` or spaces).
     """)
+
+# --- GLOBAL BACKGROUND REALTIME NOTIFICATION LISTENER ---
+@st.fragment(run_every=3)
+def global_background_notification_listener():
+    try:
+        latest_incoming = db.get_latest_incoming_message()
+        if latest_incoming:
+            if "last_seen_incoming_msg_id" not in st.session_state:
+                st.session_state["last_seen_incoming_msg_id"] = latest_incoming["msg_id"]
+            elif st.session_state["last_seen_incoming_msg_id"] != latest_incoming["msg_id"]:
+                sender_name = latest_incoming["name"] or "WhatsApp Contact"
+                st.toast(f"🔔 New message from {sender_name}: {latest_incoming['message'][:40]}...", icon="💬")
+                st.session_state["last_seen_incoming_msg_id"] = latest_incoming["msg_id"]
+                # Rerun the page to reflect the new message instantly in bubbles / sidebar unread dots!
+                st.rerun()
+    except Exception:
+        pass
+
+global_background_notification_listener()
