@@ -2,31 +2,187 @@ import sqlite3
 import pandas as pd
 import re
 import os
+import time
 
 DB_FILE = "clients.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Try to import psycopg2 for PostgreSQL support
+try:
+    import psycopg2
+    import psycopg2.extras
+    import psycopg2.pool
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+
+_connection_pool = None
+_db_initialized = False
+
+class PostgreSQLPlaceholderCursor:
+    """Wraps PostgreSQL cursor to translate SQLite '?' placeholders to '%s' dynamically."""
+    def __init__(self, cursor):
+        self._cursor = cursor
+    def execute(self, query, params=None):
+        if params is not None:
+            query = query.replace("?", "%s")
+        return self._cursor.execute(query, params)
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+class PostgreSQLPlaceholderConnection:
+    """Wraps PostgreSQL connection to standardise row dict factories and cursors."""
+    def __init__(self, conn, pool=None):
+        self._conn = conn
+        self._pool = pool
+    def cursor(self):
+        cursor = self._conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        return PostgreSQLPlaceholderCursor(cursor)
+    def commit(self):
+        self._conn.commit()
+    def rollback(self):
+        self._conn.rollback()
+    def close(self):
+        if self._pool is not None:
+            try:
+                self._pool.putconn(self._conn)
+            except Exception:
+                self._conn.close()
+        else:
+            self._conn.close()
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+def get_pg_pool_streamlit(db_url):
+    import streamlit as st
+    @st.cache_resource
+    def _create_pool(url):
+        import psycopg2.pool
+        return psycopg2.pool.ThreadedConnectionPool(1, 20, url)
+    return _create_pool(db_url)
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Returns database connection. Checks for DATABASE_URL to connect to PostgreSQL (Supabase)."""
+    global _connection_pool
+    if DATABASE_URL and PSYCOPG2_AVAILABLE:
+        # Check if running inside Streamlit
+        is_streamlit = False
+        try:
+            from streamlit.runtime import exists
+            is_streamlit = exists()
+        except ImportError:
+            pass
+            
+        if is_streamlit:
+            pool = get_pg_pool_streamlit(DATABASE_URL)
+        else:
+            if _connection_pool is None:
+                import psycopg2.pool
+                _connection_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
+            pool = _connection_pool
+            
+        conn = pool.getconn()
+        return PostgreSQLPlaceholderConnection(conn, pool)
+    else:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def init_db():
-    """Initialize the SQLite database and create the clients table if it doesn't exist."""
+    """Initialize database and create clients & messages tables. Supports both SQLite and PostgreSQL schemas."""
+    global _db_initialized
+    if _db_initialized:
+        return
+        
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            category TEXT,
-            status TEXT DEFAULT 'Active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+    
+    if DATABASE_URL and PSYCOPG2_AVAILABLE:
+        # PostgreSQL schema
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id SERIAL PRIMARY KEY,
+                client_id VARCHAR(50) UNIQUE NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                phone VARCHAR(30) NOT NULL,
+                category VARCHAR(50),
+                status VARCHAR(20) DEFAULT 'Active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                phone VARCHAR(30) NOT NULL,
+                sender VARCHAR(20) NOT NULL,
+                message TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                msg_id VARCHAR(100) UNIQUE,
+                media_b64 TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key VARCHAR(100) PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        # Migration: Add media_b64 if column doesn't exist
+        try:
+            cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_b64 TEXT")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+    else:
+        # SQLite schema
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                category TEXT,
+                status TEXT DEFAULT 'Active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                sender TEXT NOT NULL, -- 'client' or 'business'
+                message TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                msg_id TEXT UNIQUE,
+                media_b64 TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        # Migration: Add media_b64 if column doesn't exist
+        try:
+            cursor.execute("ALTER TABLE messages ADD COLUMN media_b64 TEXT")
+            conn.commit()
+        except Exception:
+            pass
+        
+    # Create indexes for fast query execution (eliminates full table scan lookup delays)
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_phone ON messages (phone)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_phone_ts ON messages (phone, timestamp DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender_ts ON messages (sender, timestamp DESC)")
+        conn.commit()
+    except Exception as e:
+        print(f"Error creating indexes: {e}")
+        
     conn.commit()
     conn.close()
+    _db_initialized = True
 
 def clean_phone_number(phone, default_country_code="91"):
     """
@@ -124,7 +280,7 @@ def get_clients_dataframe(search_query="", category_filter="All", status_filter=
     """
     conn = get_db_connection()
     
-    query = "SELECT id, client_id as [Client ID], name as [Name], phone as [Phone], category as [Category], status as [Status], created_at as [Created At] FROM clients WHERE 1=1"
+    query = 'SELECT id, client_id as "Client ID", name as "Name", phone as "Phone", category as "Category", status as "Status", created_at as "Created At" FROM clients WHERE 1=1'
     params = []
     
     # Apply category filter
@@ -269,3 +425,139 @@ def bulk_import(df, default_country_code="91"):
         "failed": len(failed_records),
         "failures": failed_records
     }
+
+def save_message(phone, sender, message, msg_id=None, media_b64=None):
+    """Saves an incoming or outgoing chat message to the messages table."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Standardize phone number format
+        cleaned_phone = clean_phone_number(phone)
+        
+        # If no message ID is provided, generate a dummy one to satisfy unique constraint
+        if not msg_id:
+            msg_id = f"local_{cleaned_phone}_{time.time()}"
+            
+        cursor.execute(
+            """INSERT INTO messages (phone, sender, message, msg_id, media_b64)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(msg_id) DO UPDATE SET
+                   phone=excluded.phone,
+                   sender=excluded.sender,
+                   message=excluded.message,
+                   media_b64=excluded.media_b64""",
+            (cleaned_phone, sender, message.strip(), msg_id, media_b64)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error saving message: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_messages_for_phone(phone, limit=50):
+    """Retrieves the latest chat messages for a specific phone number (ordered by timestamp)."""
+    conn = get_db_connection()
+    cleaned_phone = clean_phone_number(phone)
+    query = f"""
+        SELECT * FROM (
+            SELECT sender, message, timestamp, msg_id, media_b64 
+            FROM messages 
+            WHERE phone = ? 
+            ORDER BY timestamp DESC
+            LIMIT {limit}
+        ) sub
+        ORDER BY timestamp ASC
+    """
+    df = pd.read_sql_query(query, conn, params=[cleaned_phone])
+    conn.close()
+    return df
+
+def get_conversations(search_query=None, limit=50):
+    """
+    Retrieves unique conversations (recent messages grouped by phone).
+    Optionally filters by name/phone in the database, and limits results for speed.
+    """
+    conn = get_db_connection()
+    
+    # Build search condition
+    search_cond = ""
+    params = []
+    if search_query:
+        cleaned_q = f"%{search_query}%"
+        # Support both SQLite and PostgreSQL placeholder types
+        search_cond = "WHERE (m.phone LIKE ? OR COALESCE(c.name, '') LIKE ?)"
+        params = [cleaned_q, cleaned_q]
+        
+    query = f"""
+        SELECT m.phone, m.sender, m.message, m.timestamp, c.name
+        FROM messages m
+        LEFT JOIN clients c ON m.phone = c.phone
+        INNER JOIN (
+            SELECT phone, MAX(timestamp) as max_ts
+            FROM messages
+            GROUP BY phone
+        ) last_msgs ON m.phone = last_msgs.phone AND m.timestamp = last_msgs.max_ts
+        {search_cond}
+        ORDER BY m.timestamp DESC
+        LIMIT {limit}
+    """
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    return df
+
+def save_setting(key, value):
+    """Saves a configuration key-value pair to the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """INSERT INTO settings (key, value)
+               VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (key, value)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error saving setting {key}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_setting(key):
+    """Retrieves a configuration value by key from the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"Error getting setting {key}: {e}")
+        return None
+    finally:
+        conn.close()
+
+def get_latest_incoming_message():
+    """Retrieves the single latest incoming message from a client."""
+    conn = get_db_connection()
+    try:
+        query = """
+            SELECT m.phone, m.message, m.timestamp, m.msg_id, c.name
+            FROM messages m
+            LEFT JOIN clients c ON m.phone = c.phone
+            WHERE m.sender = 'client'
+            ORDER BY m.timestamp DESC
+            LIMIT 1
+        """
+        df = pd.read_sql_query(query, conn)
+        if not df.empty:
+            return df.iloc[0].to_dict()
+        return None
+    except Exception as e:
+        print(f"Error getting latest incoming message: {e}")
+        return None
+    finally:
+        conn.close()

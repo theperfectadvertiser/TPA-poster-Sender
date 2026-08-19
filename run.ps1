@@ -52,7 +52,7 @@ if (-not (Test-Path $venvPath)) {
 Write-Host "[3/4] Checking and installing dependencies..." -ForegroundColor Gray
 try {
     # Activate virtual environment temporarily and run pip install via uv
-    & uv pip install streamlit pandas requests openpyxl
+    & uv pip install -r requirements.txt
     Write-Host "✅ Dependencies synchronized successfully!" -ForegroundColor Green
 }
 catch {
@@ -64,8 +64,12 @@ catch {
 Write-Host "[4/5] Preparing client database (1,500 permanent records)..." -ForegroundColor Gray
 & uv run python test_db.py
 
+# Start Webhook server in background
+Write-Host "[Webhook] Starting webhook server in background..." -ForegroundColor Gray
+Start-Process -FilePath "uv" -ArgumentList "run", "python", "webhook.py" -WindowStyle Hidden
+
 # 5. Run Streamlit Application
-Write-Host "[5/5] Launching TPA Antigravity 2.0 Web Interface..." -ForegroundColor Cyan
+Write-Host "[5/5] Launching TPA Poster Sender Web Interface..." -ForegroundColor Cyan
 Write-Host "👉 The app will open automatically in your browser." -ForegroundColor Gray
 Write-Host "👉 Press Ctrl+C in this terminal to stop the application." -ForegroundColor Gray
 Write-Host "---------------------------------------------" -ForegroundColor Cyan

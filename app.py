@@ -6,6 +6,31 @@ import time
 import io
 import math
 import database as db
+import base64
+
+# --- STREAMLIT QUERY CACHING (Removes Supabase Network Latency) ---
+@st.cache_data(ttl=3)
+def cached_get_conversations():
+    return db.get_conversations()
+
+@st.cache_data(ttl=5)
+def cached_get_clients_dataframe(status_filter="Active"):
+    return db.get_clients_dataframe(status_filter=status_filter)
+
+@st.cache_data(ttl=2)
+def cached_get_messages_for_phone(phone):
+    return db.get_messages_for_phone(phone)
+
+def get_image_base64(filename):
+    """Encodes a local file to base64 for direct browser embedding."""
+    if os.path.exists(filename):
+        try:
+            with open(filename, "rb") as f:
+                data = f.read()
+                return base64.b64encode(data).decode()
+        except Exception:
+            return None
+    return None
 
 # Page Config with Tab Icon & Title
 st.set_page_config(
@@ -71,6 +96,42 @@ st.markdown("""
     .stAlert {
         border-radius: 12px !important;
     }
+    
+    /* Mobile Responsive Optimizations (Fluid layout overrides) */
+    @media (max-width: 768px) {
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
+            font-size: 1.4rem !important;
+            margin-bottom: 0.5rem !important;
+        }
+        .main .block-container {
+            padding-left: 8px !important;
+            padding-right: 8px !important;
+            padding-top: 12px !important;
+        }
+        div[data-testid="stTabBar"] {
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+            display: flex !important;
+            flex-wrap: nowrap !important;
+        }
+        div[data-testid="stTabBar"] button {
+            padding: 6px 10px !important;
+            font-size: 13px !important;
+            flex-shrink: 0 !important;
+        }
+        div[data-testid="stChatMessage"] {
+            padding: 6px 10px !important;
+            margin-bottom: 6px !important;
+            border-radius: 12px !important;
+        }
+        /* Mobile-friendly spacing */
+        div[data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 auto !important;
+            margin-bottom: 12px !important;
+        }
+    }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -115,46 +176,64 @@ def fetch_templates_from_meta(phone_number_id, access_token, waba_id=None):
     return res_templates.json().get("data", [])
 
 # --- META CREDENTIALS (SIDEBAR) ---
-st.sidebar.markdown("""
-<div style="text-align: center; margin-bottom: 20px;">
-    <h2 style="color: #0ea5e9 !important; margin: 0;">🔑 Meta API Engine</h2>
-    <p style="color: #64748b; font-size: 13px;">Configure WhatsApp Cloud Credentials</p>
-</div>
-""", unsafe_allow_html=True)
+# Try to load existing credentials from DB settings table
+db_phone_id = db.get_setting("PHONE_NUMBER_ID") or "1302085039650692"
+db_waba_id = db.get_setting("WABA_ID") or ""
+db_access_token = db.get_setting("ACCESS_TOKEN") or ""
 
-PHONE_NUMBER_ID = st.sidebar.text_input(
-    "Phone Number ID", 
-    value=st.session_state.get("PHONE_NUMBER_ID", "1302085039650692"),
-    help="Find this in the WhatsApp section of your Meta Developer Console"
-)
-WABA_ID = st.sidebar.text_input(
-    "WhatsApp Business Account ID (WABA ID)", 
-    value=st.session_state.get("WABA_ID", ""),
-    placeholder="Paste WABA ID here (recommended)...",
-    help="Copy this from WhatsApp > API Setup in Meta Developer Console"
-)
-ACCESS_TOKEN = st.sidebar.text_area(
-    "Access Token", 
-    value=st.session_state.get("ACCESS_TOKEN", ""),
-    placeholder="Paste your Permanent/Temporary access token here...",
-    help="System User Access Token with whatsapp_business_messaging permissions"
-)
+show_config = st.sidebar.checkbox("⚙️ Edit Meta API Config", value=False,
+                                  help="Click here to view, add, or update your Meta API credentials.")
 
-# Fetch approved templates button
-if st.sidebar.button("🔌 Fetch My Templates from Meta", use_container_width=True):
-    if not PHONE_NUMBER_ID or not ACCESS_TOKEN:
-        st.sidebar.error("Please fill Phone Number ID and Access Token first!")
-    else:
-        with st.sidebar.spinner("Syncing with Meta WABA..."):
-            try:
-                fetched_t = fetch_templates_from_meta(PHONE_NUMBER_ID, ACCESS_TOKEN, WABA_ID)
-                st.session_state["meta_templates"] = fetched_t
-                st.session_state["WABA_ID"] = WABA_ID
-                st.sidebar.success(f"Synced {len(fetched_t)} templates!")
-                time.sleep(1.0)
-                st.rerun()
-            except Exception as e:
-                st.sidebar.error(f"Sync Failed: {str(e)}")
+if show_config:
+    st.sidebar.markdown("""
+    <div style="text-align: center; margin-bottom: 20px;">
+        <h4 style="color: #0ea5e9 !important; margin: 0;">🔑 Meta API Engine</h4>
+        <p style="color: #64748b; font-size: 11px;">Configure WhatsApp Cloud Credentials</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    PHONE_NUMBER_ID = st.sidebar.text_input(
+        "Phone Number ID", 
+        value=st.session_state.get("PHONE_NUMBER_ID", db_phone_id),
+        help="Find this in the WhatsApp section of your Meta Developer Console"
+    )
+    WABA_ID = st.sidebar.text_input(
+        "WhatsApp Business Account ID (WABA ID)", 
+        value=st.session_state.get("WABA_ID", db_waba_id),
+        placeholder="Paste WABA ID here (recommended)...",
+        help="Copy this from WhatsApp > API Setup in Meta Developer Console"
+    )
+    ACCESS_TOKEN = st.sidebar.text_area(
+        "Access Token", 
+        value=st.session_state.get("ACCESS_TOKEN", db_access_token),
+        placeholder="Paste your Permanent/Temporary access token here...",
+        help="System User Access Token with whatsapp_business_messaging permissions"
+    )
+
+    # Fetch approved templates button
+    if st.sidebar.button("🔌 Fetch My Templates from Meta", use_container_width=True):
+        if not PHONE_NUMBER_ID or not ACCESS_TOKEN:
+            st.sidebar.error("Please fill Phone Number ID and Access Token first!")
+        else:
+            with st.sidebar.spinner("Syncing with Meta WABA..."):
+                try:
+                    fetched_t = fetch_templates_from_meta(PHONE_NUMBER_ID, ACCESS_TOKEN, WABA_ID)
+                    st.session_state["meta_templates"] = fetched_t
+                    st.session_state["WABA_ID"] = WABA_ID
+                    st.session_state["PHONE_NUMBER_ID"] = PHONE_NUMBER_ID
+                    st.session_state["ACCESS_TOKEN"] = ACCESS_TOKEN
+                    db.save_setting("PHONE_NUMBER_ID", PHONE_NUMBER_ID)
+                    db.save_setting("WABA_ID", WABA_ID)
+                    db.save_setting("ACCESS_TOKEN", ACCESS_TOKEN)
+                    st.sidebar.success(f"Synced {len(fetched_t)} templates!")
+                    time.sleep(1.0)
+                    st.rerun()
+                except Exception as e:
+                    st.sidebar.error(f"Sync Failed: {str(e)}")
+else:
+    PHONE_NUMBER_ID = st.session_state.get("PHONE_NUMBER_ID", db_phone_id)
+    WABA_ID = st.session_state.get("WABA_ID", db_waba_id)
+    ACCESS_TOKEN = st.session_state.get("ACCESS_TOKEN", db_access_token)
 
 # Template Name and Language code selection
 TEMPLATE_NAME = "daily_poster_delivery"
@@ -238,6 +317,15 @@ st.session_state["ACCESS_TOKEN"] = ACCESS_TOKEN
 st.session_state["TEMPLATE_NAME"] = TEMPLATE_NAME
 st.session_state["LANGUAGE_CODE"] = LANGUAGE_CODE
 
+# Save credentials in Supabase settings table for the webhook.py background process
+try:
+    db.save_setting("PHONE_NUMBER_ID", PHONE_NUMBER_ID)
+    db.save_setting("WABA_ID", WABA_ID)
+    db.save_setting("ACCESS_TOKEN", ACCESS_TOKEN)
+except Exception:
+    pass
+
+
 # Title Header Banner
 st.markdown("""
 <div style="background: linear-gradient(135deg, #0f172a 0%, #115e59 100%); padding: 32px; border-radius: 16px; border: 1px solid #0d9488; margin-bottom: 25px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);">
@@ -254,9 +342,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Navigation Tabs
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📤 Daily Poster Dispatch", 
     "👥 Master Client Database", 
+    "💬 Inbox & Live Chat",
     "🔧 Settings & Dev Sandbox"
 ])
 
@@ -349,13 +438,44 @@ def send_whatsapp_template(to_phone, client_name, media_id, include_name=True):
     except Exception as e:
         return {"status": "FAILED", "reason": str(e)}
 
+def send_direct_message(to_phone, message_text):
+    """Sends a direct free-form text message to the recipient's phone using Meta Cloud API."""
+    if not ACCESS_TOKEN or ACCESS_TOKEN.startswith("YOUR_"):
+        return {"status": "FAILED", "reason": "Credentials not set"}
+        
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to_phone,
+        "type": "text",
+        "text": {
+            "body": message_text
+        }
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        res_data = response.json()
+        if response.status_code == 200:
+            msg_id = res_data.get("messages", [{}])[0].get("id")
+            return {"status": "SUCCESS", "message_id": msg_id}
+        else:
+            error_msg = res_data.get("error", {}).get("message", response.text)
+            return {"status": "FAILED", "reason": error_msg}
+    except Exception as e:
+        return {"status": "FAILED", "reason": str(e)}
+
 # --- TAB 1: DAILY DISPATCH CENTER ---
 with tab1:
     st.subheader("Daily Broadcast Console")
     
     # Metrics
     categories = db.get_unique_categories()
-    all_clients_df, total_registered = db.get_clients_dataframe(status_filter="Active")
+    all_clients_df, total_registered = cached_get_clients_dataframe(status_filter="Active")
     
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
@@ -384,13 +504,40 @@ with tab1:
     st.markdown("### 1. Configure Target Recipients")
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        selected_category = st.selectbox("Filter Target Category", ["All"] + categories)
+        target_type = st.radio("Target Type", ["All/Category Filter", "Select Single Client"], horizontal=True)
     with col_f2:
         send_mode = st.radio("Send Mode", ["Simulated (Sandbox Test)", "Live WhatsApp Broadcast"], horizontal=True,
                              help="Simulated mode runs the batch process, logs progress and verifies format without charging/sending actual API hits.")
         
-    # Get filtered recipients
-    target_df, target_count = db.get_clients_dataframe(category_filter=selected_category, status_filter="Active")
+    if target_type == "Select Single Client":
+        # Get list of all clients
+        all_clients_list_df, _ = cached_get_clients_dataframe(status_filter="Active")
+        if all_clients_list_df.empty:
+            st.error("No active clients found in database.")
+            target_df = all_clients_list_df
+            target_count = 0
+        else:
+            # Vectorized list creation (extremely fast, avoids iterrows lag on 3000+ rows)
+            client_options = (
+                "👤 " + all_clients_list_df['Name'].astype(str) + 
+                " (" + all_clients_list_df['Phone'].astype(str) + ") - " + 
+                all_clients_list_df['Category'].astype(str)
+            ).tolist()
+            client_phone_map = dict(zip(client_options, all_clients_list_df['Phone']))
+            
+            selected_client_lbl = st.selectbox("Select Target Client", client_options)
+            selected_phone_num = client_phone_map[selected_client_lbl]
+            
+            # Filter dataframe to contain only this single client
+            target_df = all_clients_list_df[all_clients_list_df['Phone'] == selected_phone_num]
+            target_count = len(target_df)
+    else:
+        with col_f1:
+            selected_category = st.selectbox("Filter Target Category", ["All"] + categories)
+            
+        # Get filtered recipients
+        target_df, target_count = db.get_clients_dataframe(category_filter=selected_category, status_filter="Active")
+        
     st.info(f"🎯 Ready to target **{target_count}** client(s) matching your filter settings.")
     
     st.markdown("### 2. Upload and Prepare Daily Poster(s)")
@@ -427,6 +574,9 @@ with tab1:
         st.warning(f"⚠️ **Action Ready:** {confirm_text}")
         
         if st.button("🚀 EXECUTE WhatsApp BROADCAST NOW", type="primary", use_container_width=True):
+            # Reset index to guarantee contiguous 0-based idx in loop for progress calculation
+            target_df = target_df.reset_index(drop=True)
+            
             progress_bar = st.progress(0)
             status_text = st.empty()
             log_terminal = st.empty()
@@ -444,6 +594,9 @@ with tab1:
                 status_text.text("⚙️ Initializing: Caching daily poster(s) onto Meta Cloud API...")
                 for file in poster_files:
                     try:
+                        # Save a copy locally so it can be rendered inside the Chat Inbox!
+                        with open(file.name, "wb") as f:
+                            f.write(file.getvalue())
                         # Read file bytes
                         file_bytes = file.getvalue()
                         media_id = upload_image_to_meta(file_bytes, file.name, file.type)
@@ -456,6 +609,12 @@ with tab1:
             else:
                 # Simulated Mode - fake IDs
                 for i, file in enumerate(poster_files):
+                    try:
+                        # Save a copy locally so it can be rendered inside the Chat Inbox!
+                        with open(file.name, "wb") as f:
+                            f.write(file.getvalue())
+                    except Exception:
+                        pass
                     cached_media_map[file.name] = f"sim_media_id_{i}"
                 log_content += f"[{time.strftime('%H:%M:%S')}] Simulated caching for {len(poster_files)} poster(s) complete.\n"
                 log_terminal.code(log_content, language="text", wrap_lines=True)
@@ -509,6 +668,7 @@ with tab1:
                             success_count += 1
                             log_msg = f"[{time.strftime('%H:%M:%S')}] Live SUCCESS ✅ -> {c_name} ({c_phone}) | MsgID: {res['message_id']} | Poster: {poster_name}\n"
                             log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SUCCESS", "Detail": res['message_id']})
+                            db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", res['message_id'])
                         else:
                             fail_count += 1
                             log_msg = f"[{time.strftime('%H:%M:%S')}] Live FAILED ❌ -> {c_name} ({c_phone}) | Reason: {res['reason']} | Poster: {poster_name}\n"
@@ -519,6 +679,7 @@ with tab1:
                         success_count += 1
                         log_msg = f"[{time.strftime('%H:%M:%S')}] Sim SUCCESS ✅ -> {c_name} ({c_phone}) | Poster: {poster_name}\n"
                         log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SIMULATED SUCCESS", "Detail": "None"})
+                        db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}")
                     
                     log_content += log_msg
                     log_terminal.code(log_content, language="text", wrap_lines=True)
@@ -669,55 +830,64 @@ with tab2:
     # 3. Edit / Delete Client
     with action_tabs[2]:
         st.markdown("### Edit or Delete Client")
-        st.write("Search and edit single records here.")
         
-        # Load all clients for dropdown select
-        all_edit_df, _ = db.get_clients_dataframe(status_filter="All")
-        if not all_edit_df.empty:
-            # Create labels
-            client_options = []
-            client_map = {}
-            for idx, row in all_edit_df.iterrows():
-                db_id = row['id']
-                label = f"{row['Client ID']} - {row['Name']} ({row['Phone']})"
-                client_options.append(label)
-                client_map[label] = row
-                
-            selected_label = st.selectbox("Select Client to Modify", client_options)
+        # Search client before editing (avoids loading 3000+ rows into selectbox at once)
+        search_edit = st.text_input("🔍 Search Client to Edit (Name, ID or Phone)", key="search_edit_input")
+        
+        if search_edit.strip():
+            # Query matching clients from database (limit 10 for super fast dropdown rendering)
+            all_edit_df, _ = db.get_clients_dataframe(search_query=search_edit.strip(), status_filter="All", limit=10)
             
-            if selected_label:
-                selected_row = client_map[selected_label]
+            if not all_edit_df.empty:
+                # Vectorized label creation (0.1ms execution)
+                client_options = (
+                    all_edit_df['Client ID'].astype(str) + " - " +
+                    all_edit_df['Name'].astype(str) + " (" +
+                    all_edit_df['Phone'].astype(str) + ")"
+                ).tolist()
+                client_map = dict(zip(client_options, all_edit_df.to_dict('records')))
                 
-                with st.form("edit_client_form"):
-                    col_e1, col_e2 = st.columns(2)
-                    with col_e1:
-                        edit_id = st.text_input("Client ID", value=selected_row["Client ID"])
-                        edit_name = st.text_input("Name", value=selected_row["Name"])
-                    with col_e2:
-                        edit_phone = st.text_input("Phone Number", value=selected_row["Phone"])
-                        edit_cat = st.text_input("Category", value=selected_row["Category"])
-                        edit_status = st.selectbox("Status", ["Active", "Inactive"], index=0 if selected_row["Status"] == "Active" else 1)
-                        
-                    col_b1, col_b2 = st.columns(2)
-                    with col_b1:
-                        edit_submitted = st.form_submit_button("Update Client Records", type="primary")
-                    with col_b2:
-                        delete_submitted = st.form_submit_button("🚨 DELETE CLIENT PERMANENTLY")
-                        
-                    if edit_submitted:
-                        try:
-                            db.update_client(selected_row["id"], edit_id, edit_name, edit_phone, edit_cat, edit_status, DEFAULT_COUNTRY_CODE)
-                            st.success(f"✅ Successfully updated client '{edit_name}'!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error updating client: {str(e)}")
+                selected_label = st.selectbox("Select Client to Modify", client_options, key="select_client_modify_box")
+                
+                if selected_label:
+                    selected_row = client_map[selected_label]
+                    
+                    with st.form("edit_client_form"):
+                        col_e1, col_e2 = st.columns(2)
+                        with col_e1:
+                            edit_id = st.text_input("Client ID", value=selected_row["Client ID"])
+                            edit_name = st.text_input("Name", value=selected_row["Name"])
+                        with col_e2:
+                            edit_phone = st.text_input("Phone Number", value=selected_row["Phone"])
+                            edit_cat = st.text_input("Category", value=selected_row["Category"])
+                            edit_status = st.selectbox("Status", ["Active", "Inactive"], index=0 if selected_row["Status"] == "Active" else 1)
                             
-                    if delete_submitted:
-                        db.delete_clients([selected_row["id"]])
-                        st.success(f"🗑️ Client '{edit_name}' deleted permanently.")
-                        st.rerun()
+                        col_b1, col_b2 = st.columns(2)
+                        with col_b1:
+                            edit_submitted = st.form_submit_button("Update Client Records", type="primary")
+                        with col_b2:
+                            delete_submitted = st.form_submit_button("🚨 DELETE CLIENT PERMANENTLY")
+                            
+                        if edit_submitted:
+                            try:
+                                db.update_client(selected_row["id"], edit_id, edit_name, edit_phone, edit_cat, edit_status, DEFAULT_COUNTRY_CODE)
+                                st.success(f"✅ Successfully updated client '{edit_name}'!")
+                                st.cache_data.clear() # Clear cache to show edits instantly in the list
+                                time.sleep(0.5)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error updating client: {str(e)}")
+                                
+                        if delete_submitted:
+                            db.delete_clients([selected_row["id"]])
+                            st.success(f"🗑️ Client '{edit_name}' deleted permanently.")
+                            st.cache_data.clear() # Clear cache to reflect deletion
+                            time.sleep(0.5)
+                            st.rerun()
+            else:
+                st.info("No matching records found. Try another search query.")
         else:
-            st.info("No records in database to edit.")
+            st.info("💡 Type a name, ID, or phone number in the search box above to search and edit client details.")
 
     # 4. Database Actions
     with action_tabs[3]:
@@ -728,19 +898,22 @@ with tab2:
             st.markdown("#### export Database")
             st.write("Export and download your database backup to Excel or CSV.")
             
-            full_db_df, _ = db.get_clients_dataframe(status_filter="All")
-            if not full_db_df.empty:
-                # CSV Export
-                export_csv = full_db_df.drop(columns=["id"]).to_csv(index=False)
-                st.download_button(
-                    label="📥 Export Full Database to CSV",
-                    data=export_csv,
-                    file_name="tpa_clients_backup.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            else:
-                st.info("Database is empty, nothing to export.")
+            show_export = st.checkbox("Prepare Database Export Data", key="chk_prepare_export")
+            if show_export:
+                with st.spinner("Downloading full database records..."):
+                    full_db_df, _ = db.get_clients_dataframe(status_filter="All")
+                if not full_db_df.empty:
+                    # CSV Export
+                    export_csv = full_db_df.drop(columns=["id"]).to_csv(index=False)
+                    st.download_button(
+                        label="📥 Export Full Database to CSV",
+                        data=export_csv,
+                        file_name="tpa_clients_backup.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                else:
+                    st.info("Database is empty, nothing to export.")
                 
         with col_u2:
             st.markdown("#### 🚨 Dangerous Area")
@@ -752,8 +925,269 @@ with tab2:
                 st.success("💥 Database wiped clean. All records deleted!")
                 st.rerun()
 
-# --- TAB 3: SETTINGS & DEV SANDBOX ---
+# --- TAB 3: INBOX & LIVE CHAT ---
 with tab3:
+    st.subheader("💬 Two-way WhatsApp CRM Inbox")
+    st.write("View incoming replies from clients in real-time and reply directly to open conversations.")
+
+    # WhatsApp Web Styling for Radio Buttons and Chat Thread
+    st.markdown("""
+        <style>
+        /* WhatsApp-like layout for chat list */
+        div[data-testid="stRadio"] > div[role="radiogroup"] {
+            gap: 8px !important;
+        }
+        div[data-testid="stRadio"] label {
+            background-color: #1e293b !important;
+            border: 1px solid #334155 !important;
+            border-radius: 12px !important;
+            padding: 12px 16px !important;
+            color: #e2e8f0 !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+            width: 100% !important;
+            margin-bottom: 2px !important;
+            display: block !important;
+        }
+        div[data-testid="stRadio"] label:hover {
+            background-color: #334155 !important;
+            border-color: #475569 !important;
+        }
+        /* Style the selected chat card */
+        div[data-testid="stRadio"] label:has(input:checked) {
+            background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
+            border-color: #14b8a6 !important;
+            color: #ffffff !important;
+            box-shadow: 0 4px 12px rgba(13, 148, 136, 0.3) !important;
+        }
+        /* Hide the default radio circle input */
+        div[data-testid="stRadio"] label input[type="radio"] {
+            display: none !important;
+        }
+        /* Remove extra padding from container */
+        div[data-testid="stRadio"] label div[class*="st-"] {
+            padding: 0 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Two-column layout
+    col_chat_list, col_chat_window = st.columns([1, 2])
+
+    selected_phone = st.session_state.get("selected_phone", None)
+
+    # 1. Left column: conversations list (OUTSIDE the fragment, so 100% stable!)
+    with col_chat_list:
+        st.markdown("#### Recent Conversations")
+        
+        # Inbox Controls
+        col_c_ref, col_c_spacer = st.columns([1, 2])
+        with col_c_ref:
+            if st.button("🔄 Refresh"):
+                st.cache_data.clear()
+                st.rerun()
+                
+        # Chat Search filter
+        search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
+        
+        try:
+            if search_chat:
+                conversations = db.get_conversations(search_query=search_chat, limit=50)
+            else:
+                conversations = cached_get_conversations()
+                
+            if conversations.empty:
+                st.info("No matching conversations found.")
+            else:
+                options = []
+                phone_map = {}
+                default_index = 0
+                for idx, row in conversations.reset_index(drop=True).iterrows():
+                    name = row['name'] if row['name'] else "Unknown Lead"
+                    unread_badge = "🔴 " if row['sender'] == 'client' else ""
+                    
+                    # Clean the message preview for list layout
+                    msg_preview = str(row['message'])
+                    if msg_preview.startswith("📷 Incoming Image:"):
+                        msg_preview = "📷 Client Photo"
+                    elif msg_preview.startswith("🖼️ Sent Poster:"):
+                        msg_preview = "🖼️ Sent Poster"
+                    
+                    if len(msg_preview) > 22:
+                        msg_preview = msg_preview[:20] + "..."
+                        
+                    label = f"{unread_badge}👤 {name} ({row['phone']})\n💬 {msg_preview}"
+                    options.append(label)
+                    phone_map[label] = row['phone']
+                    
+                    if selected_phone and row['phone'] == selected_phone:
+                        default_index = idx
+                        
+                # Ensure index is within bounds
+                if default_index >= len(options):
+                    default_index = 0
+                    
+                selected_label = st.radio("Select Chat", options, index=default_index, label_visibility="collapsed")
+                if selected_label:
+                    selected_phone = phone_map[selected_label]
+                    st.session_state["selected_phone"] = selected_phone
+        except Exception as e:
+            st.error(f"Error loading conversations: {e}")
+
+    # Helper function decorated with st.fragment to auto-refresh the messages list in real-time
+    @st.fragment(run_every=2)
+    def render_chat_bubbles_realtime(phone):
+        # Retrieve messages for this phone number
+        try:
+            msgs_df = cached_get_messages_for_phone(phone)
+            
+            # Using native Streamlit container with fixed height to prevent flickering and DOM resetting!
+            with st.container(height=480):
+                for idx, row in msgs_df.iterrows():
+                    sender = row['sender']
+                    msg_text = row['message']
+                    ts = str(row['timestamp']).split(".")[0] # Clean timestamp format
+                    media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
+                    
+                    if sender == 'client':
+                        with st.chat_message("user", avatar="👤"):
+                            if media_b64 and str(media_b64).strip():
+                                st.image(f"data:image/png;base64,{media_b64}", caption="📷 Client Image", use_container_width=True)
+                            elif str(msg_text).startswith("📷 Incoming Image:"):
+                                media_url = str(msg_text).replace("📷 Incoming Image:", "").strip()
+                                if media_url.startswith("http"):
+                                    st.image(media_url, caption="📷 Client Image", use_container_width=True)
+                                else:
+                                    b64_in = get_image_base64(media_url)
+                                    if b64_in:
+                                        st.image(f"data:image/png;base64,{b64_in}", caption="📷 Client Image", use_container_width=True)
+                                    else:
+                                        st.write(f"📷 Client Image: {media_url}")
+                            else:
+                                st.write(msg_text)
+                            st.caption(f"🕒 {ts}")
+                    else:
+                        with st.chat_message("assistant", avatar="💼"):
+                            if str(msg_text).startswith("🖼️ Sent Poster:"):
+                                poster_name = str(msg_text).replace("🖼️ Sent Poster:", "").strip()
+                                b64 = get_image_base64(poster_name)
+                                if b64:
+                                    st.image(f"data:image/png;base64,{b64}", caption=poster_name, use_container_width=True)
+                                else:
+                                    st.write(f"🖼️ Sent Poster: {poster_name}")
+                            else:
+                                st.write(msg_text)
+                            st.caption(f"🕒 {ts} (You)")
+        except Exception as e:
+            st.error(f"Error loading chat bubbles: {e}")
+
+    # 2. Right column: chat window, direct reply and forward panel
+    with col_chat_window:
+        if selected_phone:
+            # Get client details
+            client_name = "Unknown Client"
+            try:
+                client_info, count = db.get_clients_dataframe(search_query=selected_phone)
+                if count > 0:
+                    client_name = client_info.iloc[0]['Name']
+            except Exception as e:
+                pass
+                
+            st.markdown(f"#### Conversation with: **{client_name}** (`{selected_phone}`)")
+            
+            # Render the realtime chat bubbles fragment (Auto-refreshes every 2 seconds without flickering!)
+            render_chat_bubbles_realtime(selected_phone)
+            
+            # Reply Input Form (OUTSIDE the fragment, so typing is 100% stable!)
+            with st.form(key=f"reply_form_{selected_phone}", clear_on_submit=True):
+                reply_text = st.text_area("Write reply...", placeholder="Type a message to reply...", label_visibility="collapsed")
+                col_sbtn, _ = st.columns([1, 2])
+                with col_sbtn:
+                    submit_reply = st.form_submit_button("📤 Send Direct Reply", use_container_width=True)
+                    
+                if submit_reply and reply_text.strip():
+                    with st.spinner("Sending message..."):
+                        res = send_direct_message(selected_phone, reply_text)
+                        if res["status"] == "SUCCESS":
+                            # Save reply to database
+                            db.save_message(selected_phone, "business", reply_text, res["message_id"])
+                            st.success("Reply dispatched successfully!")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to dispatch reply: {res['reason']}")
+                            
+            # Forward Message Panel (OUTSIDE fragment)
+            st.markdown("---")
+            st.markdown("##### ➡️ Forward Message to Another Client")
+            try:
+                # Load current message list for dropdown options
+                msgs_df = cached_get_messages_for_phone(selected_phone)
+                msg_options = []
+                msg_map = {}
+                for idx, r in msgs_df.iterrows():
+                    sender_lbl = "Client" if r['sender'] == 'client' else "You"
+                    preview = str(r['message'])
+                    if preview.startswith("📷 Incoming Image:"):
+                        preview = "📷 Client Image"
+                    elif preview.startswith("🖼️ Sent Poster:"):
+                        preview = "🖼️ Sent Poster"
+                    if len(preview) > 35:
+                        preview = preview[:32] + "..."
+                    lbl = f"[{sender_lbl}] {preview}"
+                    msg_options.append(lbl)
+                    msg_map[lbl] = r['message']
+                    
+                if msg_options:
+                    col_fw1, col_fw2 = st.columns([1.5, 1])
+                    with col_fw1:
+                        selected_fw_msg_lbl = st.selectbox("Select Message to Forward", msg_options, key=f"fw_msg_sel_{selected_phone}", label_visibility="collapsed")
+                        selected_fw_text = msg_map[selected_fw_msg_lbl]
+                    with col_fw2:
+                        # Fetch active clients list
+                        all_clients_list_df, _ = cached_get_clients_dataframe(status_filter="Active")
+                        client_options = ["Enter Custom Number..."]
+                        client_phone_map = {}
+                        if not all_clients_list_df.empty:
+                            filtered_df = all_clients_list_df[all_clients_list_df['Phone'] != selected_phone]
+                            if not filtered_df.empty:
+                                options_list = (
+                                    "👤 " + filtered_df['Name'].astype(str) + 
+                                    " (" + filtered_df['Phone'].astype(str) + ")"
+                                ).tolist()
+                                client_options.extend(options_list)
+                                client_phone_map.update(dict(zip(options_list, filtered_df['Phone'])))
+                                
+                        selected_fw_target = st.selectbox("Forward Target Number", client_options, key=f"fw_target_sel_{selected_phone}", label_visibility="collapsed")
+                        if selected_fw_target == "Enter Custom Number...":
+                            fw_target_phone = st.text_input("Enter Target Phone", placeholder="e.g. 919876543210", key=f"fw_phone_custom_{selected_phone}", label_visibility="collapsed")
+                        else:
+                            fw_target_phone = client_phone_map[selected_fw_target]
+                            
+                    col_fbtn, _ = st.columns([1, 2])
+                    with col_fbtn:
+                        if st.button("➡️ Forward Now", key=f"fw_btn_{selected_phone}", use_container_width=True):
+                            if fw_target_phone:
+                                with st.spinner("Forwarding message..."):
+                                    res = send_direct_message(fw_target_phone, f"[Forwarded] {selected_fw_text}")
+                                    if res["status"] == "SUCCESS":
+                                        db.save_message(fw_target_phone, "business", f"[Forwarded] {selected_fw_text}", res["message_id"])
+                                        st.success(f"Forwarded successfully to {fw_target_phone}!")
+                                        time.sleep(1.0)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed to forward: {res['reason']}")
+                            else:
+                                st.warning("Please specify a target phone number.")
+                else:
+                    st.info("No messages in this chat to forward.")
+            except Exception as e:
+                st.error(f"Error loading forward menu: {e}")
+        else:
+            st.info("👈 Select a conversation thread from the list to view chat and reply.")
+
+# --- TAB 4: SETTINGS & DEV SANDBOX ---
+with tab4:
     st.subheader("WhatsApp Cloud Developer Sandbox")
     st.write("This testing sandbox helps you verify that Meta API credentials, media uploads, and template parameters are correctly aligned with Meta servers *before* doing bulk blasts.")
     
@@ -817,3 +1251,22 @@ with tab3:
     - Media uploaded to Meta Cloud servers remains cached for exactly **30 days**.
     - Phone number strings must follow E.164 standards: only digits, starting with country code (no leading `+` or spaces).
     """)
+
+# --- GLOBAL BACKGROUND REALTIME NOTIFICATION LISTENER ---
+@st.fragment(run_every=3)
+def global_background_notification_listener():
+    try:
+        latest_incoming = db.get_latest_incoming_message()
+        if latest_incoming:
+            if "last_seen_incoming_msg_id" not in st.session_state:
+                st.session_state["last_seen_incoming_msg_id"] = latest_incoming["msg_id"]
+            elif st.session_state["last_seen_incoming_msg_id"] != latest_incoming["msg_id"]:
+                sender_name = latest_incoming["name"] or "WhatsApp Contact"
+                st.toast(f"🔔 New message from {sender_name}: {latest_incoming['message'][:40]}...", icon="💬")
+                st.session_state["last_seen_incoming_msg_id"] = latest_incoming["msg_id"]
+                # Rerun the page to reflect the new message instantly in bubbles / sidebar unread dots!
+                st.rerun()
+    except Exception:
+        pass
+
+global_background_notification_listener()
