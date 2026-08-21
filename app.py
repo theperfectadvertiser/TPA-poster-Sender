@@ -32,6 +32,17 @@ def get_image_base64(filename):
             return None
     return None
 
+def format_timestamp_local(ts_val):
+    try:
+        import pandas as pd
+        dt = pd.to_datetime(ts_val)
+        if dt.tzinfo is None:
+            dt = dt.tz_localize('UTC')
+        dt_ist = dt.tz_convert('Asia/Kolkata')
+        return dt_ist.strftime('%d-%b %I:%M %p')
+    except Exception:
+        return str(ts_val).split(".")[0]
+
 # Page Config with Tab Icon & Title
 st.set_page_config(
     page_title="TPA Poster Sender | WhatsApp Bulk Engine",
@@ -968,6 +979,14 @@ with tab3:
         div[data-testid="stRadio"] label div[class*="st-"] {
             padding: 0 !important;
         }
+        .mobile-back-container {
+            margin-bottom: 12px;
+        }
+        @media (min-width: 769px) {
+            .mobile-back-container {
+                display: none !important;
+            }
+        }
         </style>
     """, unsafe_allow_html=True)
 
@@ -975,6 +994,21 @@ with tab3:
     col_chat_list, col_chat_window = st.columns([1, 2])
 
     selected_phone = st.session_state.get("selected_phone", None)
+
+    if selected_phone:
+        # Hide the sidebar (first column) on mobile to show the chat pane in full screen
+        st.markdown("""
+            <style>
+            @media (max-width: 768px) {
+                div[data-testid="column"]:nth-of-type(1) {
+                    display: none !important;
+                }
+                div[data-testid="column"]:nth-of-type(2) {
+                    width: 100% !important;
+                }
+            }
+            </style>
+        """, unsafe_allow_html=True)
 
     # 1. Left column: conversations list (OUTSIDE the fragment, so 100% stable!)
     with col_chat_list:
@@ -1027,10 +1061,12 @@ with tab3:
                 if default_index >= len(options):
                     default_index = 0
                     
-                selected_label = st.radio("Select Chat", options, index=default_index, label_visibility="collapsed")
-                if selected_label:
-                    selected_phone = phone_map[selected_label]
-                    st.session_state["selected_phone"] = selected_phone
+                # Wrap in a scrollable fixed-height container to make list readable and not infinitely long
+                with st.container(height=380):
+                    selected_label = st.radio("Select Chat", options, index=default_index, label_visibility="collapsed")
+                    if selected_label:
+                        selected_phone = phone_map[selected_label]
+                        st.session_state["selected_phone"] = selected_phone
         except Exception as e:
             st.error(f"Error loading conversations: {e}")
 
@@ -1046,7 +1082,7 @@ with tab3:
                 for idx, row in msgs_df.iterrows():
                     sender = row['sender']
                     msg_text = row['message']
-                    ts = str(row['timestamp']).split(".")[0] # Clean timestamp format
+                    ts = format_timestamp_local(row['timestamp'])
                     media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
                     
                     if sender == 'client':
@@ -1084,6 +1120,14 @@ with tab3:
     # 2. Right column: chat window, direct reply and forward panel
     with col_chat_window:
         if selected_phone:
+            # Back to conversations button for mobile devices (hidden on desktop)
+            st.markdown('<div class="mobile-back-container">', unsafe_allow_html=True)
+            if st.button("👈 Back to Conversations List", key="mobile_back_btn", use_container_width=True):
+                st.session_state["selected_phone"] = None
+                st.cache_data.clear()
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
             # Get client details
             client_name = "Unknown Client"
             try:
@@ -1264,7 +1308,7 @@ def global_background_notification_listener():
                 sender_name = latest_incoming["name"] or "WhatsApp Contact"
                 st.toast(f"🔔 New message from {sender_name}: {latest_incoming['message'][:40]}...", icon="💬")
                 st.session_state["last_seen_incoming_msg_id"] = latest_incoming["msg_id"]
-                # Rerun the page to reflect the new message instantly in bubbles / sidebar unread dots!
+                st.cache_data.clear()
                 st.rerun()
     except Exception:
         pass
