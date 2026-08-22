@@ -312,6 +312,18 @@ DEFAULT_COUNTRY_CODE = st.sidebar.text_input(
     value="91", 
     help="Prefix used when a 10-digit number is imported (e.g. 91 for India)"
 )
+
+# Fetch and store Team / Working Group Phone configuration
+db_team_group_phone = db.get_setting("TEAM_GROUP_PHONE") or ""
+TEAM_GROUP_PHONE = st.sidebar.text_input(
+    "👥 Team / Working Group Phone",
+    value=st.session_state.get("TEAM_GROUP_PHONE", db_team_group_phone),
+    placeholder="e.g. 919876543210",
+    help="Enter the phone number (with country code, no + or spaces) of your team member or working group receiver to enable quick 1-click forwarding."
+)
+if TEAM_GROUP_PHONE != db_team_group_phone:
+    db.save_setting("TEAM_GROUP_PHONE", TEAM_GROUP_PHONE)
+st.session_state["TEAM_GROUP_PHONE"] = TEAM_GROUP_PHONE
 ANTI_BAN_DELAY = st.sidebar.slider(
     "Anti-Ban Delay (Seconds)", 
     min_value=0.5, 
@@ -584,7 +596,15 @@ with tab1:
         confirm_text = f"Send {len(poster_files)} poster(s) to {target_count} client(s) in {send_mode}."
         st.warning(f"⚠️ **Action Ready:** {confirm_text}")
         
+        if "last_broadcast_time" not in st.session_state:
+            st.session_state["last_broadcast_time"] = 0.0
+
         if st.button("🚀 EXECUTE WhatsApp BROADCAST NOW", type="primary", use_container_width=True):
+            current_time = time.time()
+            if current_time - st.session_state["last_broadcast_time"] < 15:
+                st.warning("⚠️ Broadcast already in progress or recently executed. Please wait a few seconds...")
+                st.stop()
+            st.session_state["last_broadcast_time"] = current_time
             # Reset index to guarantee contiguous 0-based idx in loop for progress calculation
             target_df = target_df.reset_index(drop=True)
             
@@ -1190,8 +1210,17 @@ with tab3:
                     with col_fw2:
                         # Fetch active clients list
                         all_clients_list_df, _ = cached_get_clients_dataframe(status_filter="Active")
-                        client_options = ["Enter Custom Number..."]
+                        client_options = []
                         client_phone_map = {}
+                        
+                        # Add Team Group option first if configured
+                        if TEAM_GROUP_PHONE:
+                            team_lbl = f"👥 Team/Working Group ({TEAM_GROUP_PHONE})"
+                            client_options.append(team_lbl)
+                            client_phone_map[team_lbl] = TEAM_GROUP_PHONE
+                            
+                        client_options.append("Enter Custom Number...")
+                        
                         if not all_clients_list_df.empty:
                             filtered_df = all_clients_list_df[all_clients_list_df['Phone'] != selected_phone]
                             if not filtered_df.empty:
