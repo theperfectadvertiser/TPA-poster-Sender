@@ -601,12 +601,30 @@ with tab1:
 
         if st.button("🚀 EXECUTE WhatsApp BROADCAST NOW", type="primary", use_container_width=True):
             current_time = time.time()
-            if current_time - st.session_state["last_broadcast_time"] < 15:
+            
+            # 1. Local session cooldown
+            if current_time - st.session_state["last_broadcast_time"] < 25:
                 st.warning("⚠️ Broadcast already in progress or recently executed. Please wait a few seconds...")
                 st.stop()
+                
+            # 2. Global database-level cooldown lock (prevents duplicate runs on tab refreshes / reconnects)
+            try:
+                global_last_run = db.get_setting("LAST_BROADCAST_RUN_TIME")
+                if global_last_run:
+                    if current_time - float(global_last_run) < 25:
+                        st.warning("⚠️ Broadcast already processed in another session. Blocked to prevent duplication.")
+                        st.stop()
+            except Exception:
+                pass
+                
+            # Save run time globally and locally
+            db.save_setting("LAST_BROADCAST_RUN_TIME", str(current_time))
             st.session_state["last_broadcast_time"] = current_time
-            # Reset index to guarantee contiguous 0-based idx in loop for progress calculation
-            target_df = target_df.reset_index(drop=True)
+            
+            # Clean and deduplicate target phone numbers to prevent duplicate sends to the same contact
+            target_df['Phone'] = target_df['Phone'].apply(db.clean_phone_number)
+            target_df = target_df.drop_duplicates(subset=['Phone']).reset_index(drop=True)
+            target_count = len(target_df)
             
             progress_bar = st.progress(0)
             status_text = st.empty()
