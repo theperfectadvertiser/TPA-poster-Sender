@@ -686,6 +686,13 @@ with tab1:
                     poster_name = file.name
                     media_id = cached_media_map[poster_name]
                     
+                    # Convert file bytes to base64 for persistent database storage
+                    try:
+                        import base64
+                        poster_b64 = base64.b64encode(file.getvalue()).decode()
+                    except Exception:
+                        poster_b64 = None
+                    
                     status_text.text(f"Sending Poster {img_idx+1}/{len(matched_files)} to ({idx+1}/{target_count}): {c_name}...")
                     
                     if send_mode == "Live WhatsApp Broadcast":
@@ -699,7 +706,7 @@ with tab1:
                             success_count += 1
                             log_msg = f"[{time.strftime('%H:%M:%S')}] Live SUCCESS ✅ -> {c_name} ({c_phone}) | MsgID: {res['message_id']} | Poster: {poster_name}\n"
                             log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SUCCESS", "Detail": res['message_id']})
-                            db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", res['message_id'])
+                            db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", res['message_id'], media_b64=poster_b64)
                         else:
                             fail_count += 1
                             log_msg = f"[{time.strftime('%H:%M:%S')}] Live FAILED ❌ -> {c_name} ({c_phone}) | Reason: {res['reason']} | Poster: {poster_name}\n"
@@ -710,7 +717,7 @@ with tab1:
                         success_count += 1
                         log_msg = f"[{time.strftime('%H:%M:%S')}] Sim SUCCESS ✅ -> {c_name} ({c_phone}) | Poster: {poster_name}\n"
                         log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SIMULATED SUCCESS", "Detail": "None"})
-                        db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}")
+                        db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", media_b64=poster_b64)
                     
                     log_content += log_msg
                     log_terminal.code(log_content, language="text", wrap_lines=True)
@@ -1124,7 +1131,9 @@ with tab3:
                             st.caption(f"🕒 {ts}")
                     else:
                         with st.chat_message("assistant", avatar="💼"):
-                            if str(msg_text).startswith("🖼️ Sent Poster:"):
+                            if media_b64 and str(media_b64).strip():
+                                st.image(f"data:image/png;base64,{media_b64}", caption="🖼️ Sent Poster", use_container_width=True)
+                            elif str(msg_text).startswith("🖼️ Sent Poster:"):
                                 poster_name = str(msg_text).replace("🖼️ Sent Poster:", "").strip()
                                 b64 = get_image_base64(poster_name)
                                 if b64:
