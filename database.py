@@ -295,7 +295,9 @@ def get_clients_dataframe(search_query="", category_filter="All", status_filter=
         
     # Apply search query
     if search_query:
-        query += " AND (client_id LIKE ? OR name LIKE ? OR phone LIKE ? OR category LIKE ?)"
+        is_pg = (DATABASE_URL and PSYCOPG2_AVAILABLE)
+        like_op = "ILIKE" if is_pg else "LIKE"
+        query += f" AND (client_id {like_op} ? OR name {like_op} ? OR phone {like_op} ? OR category {like_op} ?)"
         search_param = f"%{search_query}%"
         params.extend([search_param] * 4)
         
@@ -486,8 +488,10 @@ def get_conversations(search_query=None, limit=50):
     params = []
     if search_query:
         cleaned_q = f"%{search_query}%"
+        is_pg = (DATABASE_URL and PSYCOPG2_AVAILABLE)
+        like_op = "ILIKE" if is_pg else "LIKE"
         # Support both SQLite and PostgreSQL placeholder types
-        search_cond = "WHERE (m.phone LIKE ? OR COALESCE(c.name, '') LIKE ?)"
+        search_cond = f"WHERE (m.phone {like_op} ? OR COALESCE(c.name, '') {like_op} ?)"
         params = [cleaned_q, cleaned_q]
         
     query = f"""
