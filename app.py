@@ -869,63 +869,58 @@ with tab2:
     with action_tabs[2]:
         st.markdown("### Edit or Delete Client")
         
-        # Search client before editing (avoids loading 3000+ rows into selectbox at once)
-        search_edit = st.text_input("🔍 Search Client to Edit (Name, ID or Phone)", key="search_edit_input")
+        # Get list of all clients (Active & Inactive) for instant search
+        all_edit_df, _ = cached_get_clients_dataframe(status_filter="All")
         
-        if search_edit.strip():
-            # Query matching clients from database (limit 10 for super fast dropdown rendering)
-            all_edit_df, _ = db.get_clients_dataframe(search_query=search_edit.strip(), status_filter="All", limit=10)
+        if all_edit_df.empty:
+            st.info("No clients found in the database. Add clients first.")
+        else:
+            # Vectorized label creation (0.1ms execution)
+            client_options = (
+                all_edit_df['Client ID'].astype(str) + " - " +
+                all_edit_df['Name'].astype(str) + " (" +
+                all_edit_df['Phone'].astype(str) + ") | " +
+                all_edit_df['Category'].fillna("").astype(str)
+            ).tolist()
+            client_map = dict(zip(client_options, all_edit_df.to_dict('records')))
             
-            if not all_edit_df.empty:
-                # Vectorized label creation (0.1ms execution)
-                client_options = (
-                    all_edit_df['Client ID'].astype(str) + " - " +
-                    all_edit_df['Name'].astype(str) + " (" +
-                    all_edit_df['Phone'].astype(str) + ")"
-                ).tolist()
-                client_map = dict(zip(client_options, all_edit_df.to_dict('records')))
+            selected_label = st.selectbox("🔍 Search and Select Client to Edit/Delete", client_options, key="select_client_modify_box")
+            
+            if selected_label:
+                selected_row = client_map[selected_label]
                 
-                selected_label = st.selectbox("Select Client to Modify", client_options, key="select_client_modify_box")
-                
-                if selected_label:
-                    selected_row = client_map[selected_label]
-                    
-                    with st.form("edit_client_form"):
-                        col_e1, col_e2 = st.columns(2)
-                        with col_e1:
-                            edit_id = st.text_input("Client ID", value=selected_row["Client ID"])
-                            edit_name = st.text_input("Name", value=selected_row["Name"])
-                        with col_e2:
-                            edit_phone = st.text_input("Phone Number", value=selected_row["Phone"])
-                            edit_cat = st.text_input("Category", value=selected_row["Category"])
-                            edit_status = st.selectbox("Status", ["Active", "Inactive"], index=0 if selected_row["Status"] == "Active" else 1)
-                            
-                        col_b1, col_b2 = st.columns(2)
-                        with col_b1:
-                            edit_submitted = st.form_submit_button("Update Client Records", type="primary")
-                        with col_b2:
-                            delete_submitted = st.form_submit_button("🚨 DELETE CLIENT PERMANENTLY")
-                            
-                        if edit_submitted:
-                            try:
-                                db.update_client(selected_row["id"], edit_id, edit_name, edit_phone, edit_cat, edit_status, DEFAULT_COUNTRY_CODE)
-                                st.success(f"✅ Successfully updated client '{edit_name}'!")
-                                st.cache_data.clear() # Clear cache to show edits instantly in the list
-                                time.sleep(0.5)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error updating client: {str(e)}")
-                                
-                        if delete_submitted:
-                            db.delete_clients([selected_row["id"]])
-                            st.success(f"🗑️ Client '{edit_name}' deleted permanently.")
-                            st.cache_data.clear() # Clear cache to reflect deletion
+                with st.form("edit_client_form"):
+                    col_e1, col_e2 = st.columns(2)
+                    with col_e1:
+                        edit_id = st.text_input("Client ID", value=selected_row["Client ID"])
+                        edit_name = st.text_input("Name", value=selected_row["Name"])
+                    with col_e2:
+                        edit_phone = st.text_input("Phone Number", value=selected_row["Phone"])
+                        edit_cat = st.text_input("Category", value=selected_row["Category"])
+                        edit_status = st.selectbox("Status", ["Active", "Inactive"], index=0 if selected_row["Status"] == "Active" else 1)
+                        
+                    col_b1, col_b2 = st.columns(2)
+                    with col_b1:
+                        edit_submitted = st.form_submit_button("Update Client Records", type="primary")
+                    with col_b2:
+                        delete_submitted = st.form_submit_button("🚨 DELETE CLIENT PERMANENTLY")
+                        
+                    if edit_submitted:
+                        try:
+                            db.update_client(selected_row["id"], edit_id, edit_name, edit_phone, edit_cat, edit_status, DEFAULT_COUNTRY_CODE)
+                            st.success(f"✅ Successfully updated client '{edit_name}'!")
+                            st.cache_data.clear() # Clear cache to show edits instantly in the list
                             time.sleep(0.5)
                             st.rerun()
-            else:
-                st.info("No matching records found. Try another search query.")
-        else:
-            st.info("💡 Type a name, ID, or phone number in the search box above to search and edit client details.")
+                        except Exception as e:
+                            st.error(f"Error updating client: {str(e)}")
+                            
+                    if delete_submitted:
+                        db.delete_clients([selected_row["id"]])
+                        st.success(f"🗑️ Client '{edit_name}' deleted permanently.")
+                        st.cache_data.clear() # Clear cache to reflect deletion
+                        time.sleep(0.5)
+                        st.rerun()
 
     # 4. Database Actions
     with action_tabs[3]:
