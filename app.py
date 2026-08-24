@@ -643,9 +643,6 @@ with tab1:
                 status_text.text("⚙️ Initializing: Caching daily poster(s) onto Meta Cloud API...")
                 for file in poster_files:
                     try:
-                        # Save a copy locally so it can be rendered inside the Chat Inbox!
-                        with open(file.name, "wb") as f:
-                            f.write(file.getvalue())
                         # Read file bytes
                         file_bytes = file.getvalue()
                         media_id = upload_image_to_meta(file_bytes, file.name, file.type)
@@ -658,12 +655,6 @@ with tab1:
             else:
                 # Simulated Mode - fake IDs
                 for i, file in enumerate(poster_files):
-                    try:
-                        # Save a copy locally so it can be rendered inside the Chat Inbox!
-                        with open(file.name, "wb") as f:
-                            f.write(file.getvalue())
-                    except Exception:
-                        pass
                     cached_media_map[file.name] = f"sim_media_id_{i}"
                 log_content += f"[{time.strftime('%H:%M:%S')}] Simulated caching for {len(poster_files)} poster(s) complete.\n"
                 log_terminal.code(log_content, language="text", wrap_lines=True)
