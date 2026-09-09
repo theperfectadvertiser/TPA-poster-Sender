@@ -63,6 +63,23 @@ def make_optimized_thumbnail_b64(file_bytes, max_width=450, quality=75):
         import base64
         return base64.b64encode(file_bytes).decode()
 
+def detect_audio_format(audio_bytes):
+    """Detects audio container/codec from raw bytes to set exact HTML5 audio MIME format."""
+    if not audio_bytes:
+        return "audio/ogg"
+    if audio_bytes.startswith(b'OggS'):
+        return "audio/ogg"
+    elif audio_bytes.startswith(b'ID3') or audio_bytes.startswith(b'\xff\xfb'):
+        return "audio/mp3"
+    elif audio_bytes.startswith(b'RIFF'):
+        return "audio/wav"
+    elif len(audio_bytes) > 8 and audio_bytes[4:8] == b'ftyp':
+        return "audio/mp4"
+    elif audio_bytes.startswith(b'\xff\xf1') or audio_bytes.startswith(b'\xff\xf9'):
+        return "audio/aac"
+    return "audio/ogg"
+
+
 
 # Page Config with Tab Icon & Title
 st.set_page_config(
@@ -361,13 +378,15 @@ st.session_state["ACCESS_TOKEN"] = ACCESS_TOKEN
 st.session_state["TEMPLATE_NAME"] = TEMPLATE_NAME
 st.session_state["LANGUAGE_CODE"] = LANGUAGE_CODE
 
-# Save credentials in Supabase settings table for the webhook.py background process
-try:
-    db.save_setting("PHONE_NUMBER_ID", PHONE_NUMBER_ID)
-    db.save_setting("WABA_ID", WABA_ID)
-    db.save_setting("ACCESS_TOKEN", ACCESS_TOKEN)
-except Exception:
-    pass
+# Save credentials in Supabase settings table only if changed
+if (PHONE_NUMBER_ID != db_phone_id) or (WABA_ID != db_waba_id) or (ACCESS_TOKEN != db_access_token):
+    try:
+        db.save_setting("PHONE_NUMBER_ID", PHONE_NUMBER_ID)
+        db.save_setting("WABA_ID", WABA_ID)
+        db.save_setting("ACCESS_TOKEN", ACCESS_TOKEN)
+    except Exception:
+        pass
+
 
 
 # Title Header Banner
@@ -1034,310 +1053,367 @@ with tab2:
                 st.success("💥 Database wiped clean. All records deleted!")
                 st.rerun()
 
-# --- TAB 3: INBOX & LIVE CHAT ---
+# --- TAB 3: INBOX & LIVE CHAT CRM ---
 with tab3:
     st.subheader("💬 Two-way WhatsApp CRM Inbox")
     st.write("View incoming replies from clients in real-time and reply directly to open conversations.")
 
-    # WhatsApp Web Styling for Radio Buttons and Chat Thread
-    st.markdown("""
-        <style>
-        /* WhatsApp-like layout for chat list */
-        div[data-testid="stRadio"] > div[role="radiogroup"] {
-            gap: 8px !important;
-        }
-        div[data-testid="stRadio"] label {
-            background-color: #1e293b !important;
-            border: 1px solid #334155 !important;
-            border-radius: 12px !important;
-            padding: 12px 16px !important;
-            color: #e2e8f0 !important;
-            cursor: pointer !important;
-            transition: all 0.2s ease !important;
-            width: 100% !important;
-            margin-bottom: 2px !important;
-            display: block !important;
-        }
-        div[data-testid="stRadio"] label:hover {
-            background-color: #334155 !important;
-            border-color: #475569 !important;
-        }
-        /* Style the selected chat card */
-        div[data-testid="stRadio"] label:has(input:checked) {
-            background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
-            border-color: #14b8a6 !important;
-            color: #ffffff !important;
-            box-shadow: 0 4px 12px rgba(13, 148, 136, 0.3) !important;
-        }
-        /* Hide the default radio circle input */
-        div[data-testid="stRadio"] label input[type="radio"] {
-            display: none !important;
-        }
-        /* Remove extra padding from container */
-        div[data-testid="stRadio"] label div[class*="st-"] {
-            padding: 0 !important;
-        }
-        .mobile-back-container {
-            margin-bottom: 12px;
-        }
-        @media (min-width: 769px) {
-            .mobile-back-container {
-                display: none !important;
-            }
-        }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # Two-column layout
-    col_chat_list, col_chat_window = st.columns([1, 2])
-
-    selected_phone = st.session_state.get("selected_phone", None)
-
-    if selected_phone:
-        # Hide the sidebar (first column) on mobile to show the chat pane in full screen
+    @st.fragment
+    def render_crm_inbox():
+        # WhatsApp Web Styling for Radio Buttons, Audio Player and Chat Thread
         st.markdown("""
             <style>
-            @media (max-width: 768px) {
-                div[data-testid="column"]:nth-of-type(1) {
+            /* WhatsApp-like layout for chat list */
+            div[data-testid="stRadio"] > div[role="radiogroup"] {
+                gap: 8px !important;
+            }
+            div[data-testid="stRadio"] label {
+                background-color: #1e293b !important;
+                border: 1px solid #334155 !important;
+                border-radius: 12px !important;
+                padding: 12px 16px !important;
+                color: #e2e8f0 !important;
+                cursor: pointer !important;
+                transition: all 0.2s ease !important;
+                width: 100% !important;
+                margin-bottom: 2px !important;
+                display: block !important;
+            }
+            div[data-testid="stRadio"] label:hover {
+                background-color: #334155 !important;
+                border-color: #475569 !important;
+            }
+            /* Style the selected chat card */
+            div[data-testid="stRadio"] label:has(input:checked) {
+                background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
+                border-color: #14b8a6 !important;
+                color: #ffffff !important;
+                box-shadow: 0 4px 12px rgba(13, 148, 136, 0.3) !important;
+            }
+            /* Hide the default radio circle input */
+            div[data-testid="stRadio"] label input[type="radio"] {
+                display: none !important;
+            }
+            /* Remove extra padding from container */
+            div[data-testid="stRadio"] label div[class*="st-"] {
+                padding: 0 !important;
+            }
+            .mobile-back-container {
+                margin-bottom: 12px;
+            }
+            @media (min-width: 769px) {
+                .mobile-back-container {
                     display: none !important;
-                }
-                div[data-testid="column"]:nth-of-type(2) {
-                    width: 100% !important;
                 }
             }
             </style>
         """, unsafe_allow_html=True)
 
-    # 1. Left column: conversations list (OUTSIDE the fragment, so 100% stable!)
-    with col_chat_list:
-        st.markdown("#### Recent Conversations")
-        
-        # Inbox Controls
-        col_c_ref, col_c_spacer = st.columns([1, 2])
-        with col_c_ref:
-            if st.button("🔄 Refresh"):
-                st.cache_data.clear()
-                st.rerun()
-                
-        # Chat Search filter
-        search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
-        
-        try:
-            if search_chat:
-                conversations = db.get_conversations(search_query=search_chat, limit=50)
-            else:
-                conversations = cached_get_conversations()
-                
-            if conversations.empty:
-                st.info("No matching conversations found.")
-            else:
-                options = []
-                phone_map = {}
-                default_index = 0
-                for idx, row in conversations.reset_index(drop=True).iterrows():
-                    name = row['name'] if row['name'] else "Unknown Lead"
-                    unread_badge = "🔴 " if row['sender'] == 'client' else ""
-                    
-                    # Clean the message preview for list layout
-                    msg_preview = str(row['message'])
-                    if msg_preview.startswith("📷 Incoming Image:"):
-                        msg_preview = "📷 Client Photo"
-                    elif msg_preview.startswith("🖼️ Sent Poster:"):
-                        msg_preview = "🖼️ Sent Poster"
-                    
-                    if len(msg_preview) > 22:
-                        msg_preview = msg_preview[:20] + "..."
-                        
-                    label = f"{unread_badge}👤 {name} ({row['phone']})\n💬 {msg_preview}"
-                    options.append(label)
-                    phone_map[label] = row['phone']
-                    
-                    if selected_phone and row['phone'] == selected_phone:
-                        default_index = idx
-                        
-                # Ensure index is within bounds
-                if default_index >= len(options):
-                    default_index = 0
-                    
-                # Wrap in a scrollable fixed-height container to make list readable and not infinitely long
-                with st.container(height=380):
-                    selected_label = st.radio("Select Chat", options, index=default_index, label_visibility="collapsed")
-                    if selected_label:
-                        selected_phone = phone_map[selected_label]
-                        st.session_state["selected_phone"] = selected_phone
-        except Exception as e:
-            st.error(f"Error loading conversations: {e}")
+        # Two-column layout
+        col_chat_list, col_chat_window = st.columns([1, 2])
 
-    # Helper function decorated with st.fragment to auto-refresh the messages list in real-time
-    @st.fragment(run_every=2)
-    def render_chat_bubbles_realtime(phone):
-        # Retrieve messages for this phone number
-        try:
-            msgs_df = cached_get_messages_for_phone(phone)
-            
-            # Using native Streamlit container with fixed height to prevent flickering and DOM resetting!
-            with st.container(height=480):
-                for idx, row in msgs_df.iterrows():
-                    sender = row['sender']
-                    msg_text = row['message']
-                    ts = format_timestamp_local(row['timestamp'])
-                    media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
-                    
-                    if sender == 'client':
-                        with st.chat_message("user", avatar="👤"):
-                            if media_b64 and str(media_b64).strip():
-                                st.image(f"data:image/png;base64,{media_b64}", caption="📷 Client Image", use_container_width=True)
-                            elif str(msg_text).startswith("📷 Incoming Image:"):
-                                media_url = str(msg_text).replace("📷 Incoming Image:", "").strip()
-                                if media_url.startswith("http"):
-                                    st.image(media_url, caption="📷 Client Image", use_container_width=True)
-                                else:
-                                    b64_in = get_image_base64(media_url)
-                                    if b64_in:
-                                        st.image(f"data:image/png;base64,{b64_in}", caption="📷 Client Image", use_container_width=True)
-                                    else:
-                                        st.write(f"📷 Client Image: {media_url}")
-                            else:
-                                st.write(msg_text)
-                            st.caption(f"🕒 {ts}")
-                    else:
-                        with st.chat_message("assistant", avatar="💼"):
-                            if media_b64 and str(media_b64).strip():
-                                st.image(f"data:image/png;base64,{media_b64}", caption="🖼️ Sent Poster", use_container_width=True)
-                            elif str(msg_text).startswith("🖼️ Sent Poster:"):
-                                poster_name = str(msg_text).replace("🖼️ Sent Poster:", "").strip()
-                                b64 = get_image_base64(poster_name)
-                                if b64:
-                                    st.image(f"data:image/png;base64,{b64}", caption=poster_name, use_container_width=True)
-                                else:
-                                    st.write(f"🖼️ Sent Poster: {poster_name}")
-                            else:
-                                st.write(msg_text)
-                            st.caption(f"🕒 {ts} (You)")
-        except Exception as e:
-            st.error(f"Error loading chat bubbles: {e}")
+        selected_phone = st.session_state.get("selected_phone", None)
 
-    # 2. Right column: chat window, direct reply and forward panel
-    with col_chat_window:
         if selected_phone:
-            # Back to conversations button for mobile devices (hidden on desktop)
-            st.markdown('<div class="mobile-back-container">', unsafe_allow_html=True)
-            if st.button("👈 Back to Conversations List", key="mobile_back_btn", use_container_width=True):
-                st.session_state["selected_phone"] = None
-                st.cache_data.clear()
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
+            # Hide the sidebar (first column) on mobile to show the chat pane in full screen
+            st.markdown("""
+                <style>
+                @media (max-width: 768px) {
+                    div[data-testid="column"]:nth-of-type(1) {
+                        display: none !important;
+                    }
+                    div[data-testid="column"]:nth-of-type(2) {
+                        width: 100% !important;
+                    }
+                }
+                </style>
+            """, unsafe_allow_html=True)
 
-            # Get client details
-            client_name = "Unknown Client"
-            try:
-                client_info, count = db.get_clients_dataframe(search_query=selected_phone)
-                if count > 0:
-                    client_name = client_info.iloc[0]['Name']
-            except Exception as e:
-                pass
-                
-            st.markdown(f"#### Conversation with: **{client_name}** (`{selected_phone}`)")
+        phone_to_name = {}
+
+        # 1. Left column: conversations list
+        with col_chat_list:
+            st.markdown("#### Recent Conversations")
             
-            # Render the realtime chat bubbles fragment (Auto-refreshes every 2 seconds without flickering!)
-            render_chat_bubbles_realtime(selected_phone)
+            # Inbox Controls
+            col_c_ref, col_c_info = st.columns([1, 1.5])
+            with col_c_ref:
+                if st.button("🔄 Refresh", key="crm_refresh_btn", use_container_width=True):
+                    st.cache_data.clear()
+                    st.rerun(scope="fragment")
+            with col_c_info:
+                st.caption("🟢 Instant Sync Active")
+                    
+            # Chat Search filter
+            search_chat = st.text_input("🔍 Search Chats", placeholder="Search by name or phone...", label_visibility="collapsed")
             
-            # Reply Input Form (OUTSIDE the fragment, so typing is 100% stable!)
-            with st.form(key=f"reply_form_{selected_phone}", clear_on_submit=True):
-                reply_text = st.text_area("Write reply...", placeholder="Type a message to reply...", label_visibility="collapsed")
-                col_sbtn, _ = st.columns([1, 2])
-                with col_sbtn:
-                    submit_reply = st.form_submit_button("📤 Send Direct Reply", use_container_width=True)
-                    
-                if submit_reply and reply_text.strip():
-                    with st.spinner("Sending message..."):
-                        res = send_direct_message(selected_phone, reply_text)
-                        if res["status"] == "SUCCESS":
-                            # Save reply to database
-                            db.save_message(selected_phone, "business", reply_text, res["message_id"])
-                            st.success("Reply dispatched successfully!")
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error(f"Failed to dispatch reply: {res['reason']}")
-                            
-            # Forward Message Panel (OUTSIDE fragment)
-            st.markdown("---")
-            st.markdown("##### ➡️ Forward Message to Another Client")
             try:
-                # Load current message list for dropdown options
-                msgs_df = cached_get_messages_for_phone(selected_phone)
-                msg_options = []
-                msg_map = {}
-                for idx, r in msgs_df.iterrows():
-                    sender_lbl = "Client" if r['sender'] == 'client' else "You"
-                    preview = str(r['message'])
-                    if preview.startswith("📷 Incoming Image:"):
-                        preview = "📷 Client Image"
-                    elif preview.startswith("🖼️ Sent Poster:"):
-                        preview = "🖼️ Sent Poster"
-                    if len(preview) > 35:
-                        preview = preview[:32] + "..."
-                    lbl = f"[{sender_lbl}] {preview}"
-                    msg_options.append(lbl)
-                    msg_map[lbl] = r['message']
-                    
-                if msg_options:
-                    col_fw1, col_fw2 = st.columns([1.5, 1])
-                    with col_fw1:
-                        selected_fw_msg_lbl = st.selectbox("Select Message to Forward", msg_options, key=f"fw_msg_sel_{selected_phone}", label_visibility="collapsed")
-                        selected_fw_text = msg_map[selected_fw_msg_lbl]
-                    with col_fw2:
-                        # Fetch active clients list
-                        all_clients_list_df, _ = cached_get_clients_dataframe(status_filter="Active")
-                        client_options = []
-                        client_phone_map = {}
-                        
-                        # Add Team Group option first if configured
-                        if TEAM_GROUP_PHONE:
-                            team_lbl = f"👥 Team/Working Group ({TEAM_GROUP_PHONE})"
-                            client_options.append(team_lbl)
-                            client_phone_map[team_lbl] = TEAM_GROUP_PHONE
-                            
-                        client_options.append("Enter Custom Number...")
-                        
-                        if not all_clients_list_df.empty:
-                            filtered_df = all_clients_list_df[all_clients_list_df['Phone'] != selected_phone]
-                            if not filtered_df.empty:
-                                options_list = (
-                                    "👤 " + filtered_df['Name'].astype(str) + 
-                                    " (" + filtered_df['Phone'].astype(str) + ")"
-                                ).tolist()
-                                client_options.extend(options_list)
-                                client_phone_map.update(dict(zip(options_list, filtered_df['Phone'])))
-                                
-                        selected_fw_target = st.selectbox("Forward Target Number", client_options, key=f"fw_target_sel_{selected_phone}", label_visibility="collapsed")
-                        if selected_fw_target == "Enter Custom Number...":
-                            fw_target_phone = st.text_input("Enter Target Phone", placeholder="e.g. 919876543210", key=f"fw_phone_custom_{selected_phone}", label_visibility="collapsed")
-                        else:
-                            fw_target_phone = client_phone_map[selected_fw_target]
-                            
-                    col_fbtn, _ = st.columns([1, 2])
-                    with col_fbtn:
-                        if st.button("➡️ Forward Now", key=f"fw_btn_{selected_phone}", use_container_width=True):
-                            if fw_target_phone:
-                                with st.spinner("Forwarding message..."):
-                                    res = send_direct_message(fw_target_phone, f"[Forwarded] {selected_fw_text}")
-                                    if res["status"] == "SUCCESS":
-                                        db.save_message(fw_target_phone, "business", f"[Forwarded] {selected_fw_text}", res["message_id"])
-                                        st.success(f"Forwarded successfully to {fw_target_phone}!")
-                                        time.sleep(1.0)
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Failed to forward: {res['reason']}")
-                            else:
-                                st.warning("Please specify a target phone number.")
+                if search_chat:
+                    conversations = db.get_conversations(search_query=search_chat, limit=50)
                 else:
-                    st.info("No messages in this chat to forward.")
+                    conversations = cached_get_conversations()
+                    
+                if conversations.empty:
+                    st.info("No matching conversations found.")
+                else:
+                    options = []
+                    phone_map = {}
+                    default_index = 0
+                    for idx, row in conversations.reset_index(drop=True).iterrows():
+                        name = row['name'] if row['name'] else "Unknown Lead"
+                        unread_badge = "🔴 " if row['sender'] == 'client' else ""
+                        
+                        # Clean the message preview for list layout
+                        msg_preview = str(row['message'] or "")
+                        if "audio" in msg_preview.lower() or "voice" in msg_preview.lower() or msg_preview.startswith("🎤"):
+                            msg_preview = "🎤 Voice Note"
+                        elif "video" in msg_preview.lower() or msg_preview.startswith("🎥"):
+                            msg_preview = "🎥 Video"
+                        elif "document" in msg_preview.lower() or msg_preview.startswith("📄"):
+                            msg_preview = "📄 Document"
+                        elif msg_preview.startswith("📷 Incoming Image:"):
+                            msg_preview = "📷 Photo"
+                        elif msg_preview.startswith("🖼️ Sent Poster:"):
+                            msg_preview = "🖼️ Poster"
+                        elif len(msg_preview) > 22:
+                            msg_preview = msg_preview[:20] + "..."
+                            
+                        label = f"{unread_badge}👤 {name} ({row['phone']})\n💬 {msg_preview}"
+                        options.append(label)
+                        phone_map[label] = row['phone']
+                        phone_to_name[row['phone']] = name
+                        
+                        if selected_phone and row['phone'] == selected_phone:
+                            default_index = idx
+                            
+                    # Ensure index is within bounds
+                    if default_index >= len(options):
+                        default_index = 0
+                        
+                    # Wrap in a scrollable fixed-height container to make list readable and not infinitely long
+                    with st.container(height=380):
+                        selected_label = st.radio("Select Chat", options, index=default_index, label_visibility="collapsed")
+                        if selected_label:
+                            new_selected_phone = phone_map[selected_label]
+                            if new_selected_phone != selected_phone:
+                                st.session_state["selected_phone"] = new_selected_phone
+                                st.rerun(scope="fragment")
             except Exception as e:
-                st.error(f"Error loading forward menu: {e}")
-        else:
-            st.info("👈 Select a conversation thread from the list to view chat and reply.")
+                st.error(f"Error loading conversations: {e}")
+
+        # Helper function decorated with st.fragment to auto-refresh the messages list in real-time
+        @st.fragment(run_every=2)
+        def render_chat_bubbles_realtime(phone):
+            # Retrieve messages for this phone number
+            try:
+                msgs_df = cached_get_messages_for_phone(phone)
+                
+                # Using native Streamlit container with fixed height to prevent flickering and DOM resetting!
+                with st.container(height=480):
+                    for idx, row in msgs_df.iterrows():
+                        sender = row['sender']
+                        msg_text = str(row['message'] or "")
+                        ts = format_timestamp_local(row['timestamp'])
+                        media_b64 = row['media_b64'] if 'media_b64' in row and not pd.isna(row['media_b64']) else None
+                        
+                        if sender == 'client':
+                            with st.chat_message("user", avatar="👤"):
+                                # Check if audio / voice message
+                                if "audio" in msg_text.lower() or "voice" in msg_text.lower() or msg_text.startswith("🎤") or msg_text.startswith("🎵"):
+                                    st.markdown("<b>🎤 Voice Message</b>", unsafe_allow_html=True)
+                                    if media_b64 and str(media_b64).strip() and len(str(media_b64).strip()) > 50:
+                                        try:
+                                            audio_bytes = base64.b64decode(media_b64)
+                                            audio_fmt = detect_audio_format(audio_bytes)
+                                            st.audio(audio_bytes, format=audio_fmt)
+                                        except Exception as e:
+                                            st.caption(f"Audio playback error: {e}")
+                                    else:
+                                        st.markdown("""
+                                        <div style="background: rgba(30, 41, 59, 0.7); border-left: 3px solid #0d9488; border-radius: 8px; padding: 8px 12px; margin: 4px 0;">
+                                            <div style="color: #94a3b8; font-size: 11px;">
+                                                <i>⚠️ Note: Voice message received before audio sync was enabled. All future voice notes can be played directly here.</i>
+                                            </div>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                elif "video" in msg_text.lower() or msg_text.startswith("🎥"):
+                                    st.markdown("<b>🎥 Video</b>", unsafe_allow_html=True)
+                                    if media_b64 and str(media_b64).strip() and len(str(media_b64).strip()) > 50:
+                                        try:
+                                            vid_bytes = base64.b64decode(media_b64)
+                                            st.video(vid_bytes)
+                                        except Exception:
+                                            st.write(msg_text)
+                                    else:
+                                        st.write(msg_text)
+                                elif "document" in msg_text.lower() or msg_text.startswith("📄"):
+                                    doc_label = msg_text.replace("📄 Document:", "").strip() or "document.pdf"
+                                    if media_b64 and str(media_b64).strip() and len(str(media_b64).strip()) > 50:
+                                        try:
+                                            doc_bytes = base64.b64decode(media_b64)
+                                            st.download_button(f"📥 Download {doc_label}", data=doc_bytes, file_name=doc_label, key=f"dl_{idx}_{phone}")
+                                        except Exception:
+                                            st.write(msg_text)
+                                    else:
+                                        st.write(msg_text)
+                                elif media_b64 and str(media_b64).strip() and len(str(media_b64).strip()) > 50:
+                                    st.image(f"data:image/png;base64,{media_b64}", caption="📷 Client Image", use_container_width=True)
+                                elif msg_text.startswith("📷 Incoming Image:"):
+                                    media_url = msg_text.replace("📷 Incoming Image:", "").strip()
+                                    if media_url.startswith("http"):
+                                        st.image(media_url, caption="📷 Client Image", use_container_width=True)
+                                    else:
+                                        b64_in = get_image_base64(media_url)
+                                        if b64_in:
+                                            st.image(f"data:image/png;base64,{b64_in}", caption="📷 Client Image", use_container_width=True)
+                                        else:
+                                            st.write(f"📷 Client Image: {media_url}")
+                                else:
+                                    st.write(msg_text)
+                                st.caption(f"🕒 {ts}")
+                        else:
+                            with st.chat_message("assistant", avatar="💼"):
+                                if media_b64 and str(media_b64).strip() and len(str(media_b64).strip()) > 50:
+                                    st.image(f"data:image/png;base64,{media_b64}", caption="🖼️ Sent Poster", use_container_width=True)
+                                elif msg_text.startswith("🖼️ Sent Poster:"):
+                                    poster_name = msg_text.replace("🖼️ Sent Poster:", "").strip()
+                                    b64 = get_image_base64(poster_name)
+                                    if b64:
+                                        st.image(f"data:image/png;base64,{b64}", caption=poster_name, use_container_width=True)
+                                    else:
+                                        st.write(f"🖼️ Sent Poster: {poster_name}")
+                                else:
+                                    st.write(msg_text)
+                                st.caption(f"🕒 {ts} (You)")
+            except Exception as e:
+                st.error(f"Error loading chat bubbles: {e}")
+
+        # 2. Right column: chat window, direct reply and forward panel
+        with col_chat_window:
+            if selected_phone:
+                # Back to conversations button for mobile devices (hidden on desktop)
+                st.markdown('<div class="mobile-back-container">', unsafe_allow_html=True)
+                if st.button("👈 Back to Conversations List", key="mobile_back_btn", use_container_width=True):
+                    st.session_state["selected_phone"] = None
+                    st.cache_data.clear()
+                    st.rerun(scope="fragment")
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                # Get client details directly from cached phone_to_name map
+                client_name = phone_to_name.get(selected_phone)
+                if not client_name or client_name == "Unknown Lead":
+                    try:
+                        client_info, count = db.get_clients_dataframe(search_query=selected_phone)
+                        if count > 0:
+                            client_name = client_info.iloc[0]['Name']
+                    except Exception:
+                        client_name = "Unknown Client"
+                    
+                st.markdown(f"#### 👤 **{client_name}** (`{selected_phone}`)")
+                
+                # Render the realtime chat bubbles fragment (Auto-refreshes every 2 seconds without flickering!)
+                render_chat_bubbles_realtime(selected_phone)
+                
+                # Reply Input Form
+                with st.form(key=f"reply_form_{selected_phone}", clear_on_submit=True):
+                    reply_text = st.text_area("Write reply...", placeholder="Type a message to reply...", label_visibility="collapsed")
+                    col_sbtn, _ = st.columns([1, 2])
+                    with col_sbtn:
+                        submit_reply = st.form_submit_button("📤 Send Direct Reply", use_container_width=True)
+                        
+                    if submit_reply and reply_text.strip():
+                        with st.spinner("Sending message..."):
+                            res = send_direct_message(selected_phone, reply_text)
+                            if res["status"] == "SUCCESS":
+                                # Save reply to database
+                                db.save_message(selected_phone, "business", reply_text, res["message_id"])
+                                st.success("Reply dispatched successfully!")
+                                st.cache_data.clear()
+                                st.rerun(scope="fragment")
+                            else:
+                                st.error(f"Failed to dispatch reply: {res['reason']}")
+                                
+                # Forward Message Panel (collapsible expander for zero performance impact)
+                with st.expander("➡️ Forward Message to Another Client or Team", expanded=False):
+                    try:
+                        # Load current message list for dropdown options
+                        msgs_df = cached_get_messages_for_phone(selected_phone)
+                        msg_options = []
+                        msg_map = {}
+                        for idx, r in msgs_df.iterrows():
+                            sender_lbl = "Client" if r['sender'] == 'client' else "You"
+                            preview = str(r['message'])
+                            if preview.startswith("📷 Incoming Image:"):
+                                preview = "📷 Client Image"
+                            elif preview.startswith("🖼️ Sent Poster:"):
+                                preview = "🖼️ Sent Poster"
+                            elif "audio" in preview.lower() or "voice" in preview.lower():
+                                preview = "🎤 Voice Message"
+                            if len(preview) > 35:
+                                preview = preview[:32] + "..."
+                            lbl = f"[{sender_lbl}] {preview}"
+                            msg_options.append(lbl)
+                            msg_map[lbl] = r['message']
+                            
+                        if msg_options:
+                            col_fw1, col_fw2 = st.columns([1.5, 1])
+                            with col_fw1:
+                                selected_fw_msg_lbl = st.selectbox("Select Message to Forward", msg_options, key=f"fw_msg_sel_{selected_phone}", label_visibility="collapsed")
+                                selected_fw_text = msg_map[selected_fw_msg_lbl]
+                            with col_fw2:
+                                # Fetch active clients list
+                                all_clients_list_df, _ = cached_get_clients_dataframe(status_filter="Active")
+                                client_options = []
+                                client_phone_map = {}
+                                
+                                # Add Team Group option first if configured
+                                if TEAM_GROUP_PHONE:
+                                    team_lbl = f"👥 Team/Working Group ({TEAM_GROUP_PHONE})"
+                                    client_options.append(team_lbl)
+                                    client_phone_map[team_lbl] = TEAM_GROUP_PHONE
+                                    
+                                client_options.append("Enter Custom Number...")
+                                
+                                if not all_clients_list_df.empty:
+                                    filtered_df = all_clients_list_df[all_clients_list_df['Phone'] != selected_phone]
+                                    if not filtered_df.empty:
+                                        options_list = (
+                                            "👤 " + filtered_df['Name'].astype(str) + 
+                                            " (" + filtered_df['Phone'].astype(str) + ")"
+                                        ).tolist()
+                                        client_options.extend(options_list)
+                                        client_phone_map.update(dict(zip(options_list, filtered_df['Phone'])))
+                                        
+                                selected_fw_target = st.selectbox("Forward Target Number", client_options, key=f"fw_target_sel_{selected_phone}", label_visibility="collapsed")
+                                if selected_fw_target == "Enter Custom Number...":
+                                    fw_target_phone = st.text_input("Enter Target Phone", placeholder="e.g. 919876543210", key=f"fw_phone_custom_{selected_phone}", label_visibility="collapsed")
+                                else:
+                                    fw_target_phone = client_phone_map[selected_fw_target]
+                                    
+                            col_fbtn, _ = st.columns([1, 2])
+                            with col_fbtn:
+                                if st.button("➡️ Forward Now", key=f"fw_btn_{selected_phone}", use_container_width=True):
+                                    if fw_target_phone:
+                                        with st.spinner("Forwarding message..."):
+                                            res = send_direct_message(fw_target_phone, f"[Forwarded] {selected_fw_text}")
+                                            if res["status"] == "SUCCESS":
+                                                db.save_message(fw_target_phone, "business", f"[Forwarded] {selected_fw_text}", res["message_id"])
+                                                st.success(f"Forwarded successfully to {fw_target_phone}!")
+                                                time.sleep(0.5)
+                                                st.rerun(scope="fragment")
+                                            else:
+                                                st.error(f"Failed to forward: {res['reason']}")
+                                    else:
+                                        st.warning("Please specify a target phone number.")
+                        else:
+                            st.info("No messages in this chat to forward.")
+                    except Exception as e:
+                        st.error(f"Error loading forward menu: {e}")
+            else:
+                st.info("👈 Select a conversation thread from the list to view chat and reply.")
+
+    render_crm_inbox()
+
 
 # --- TAB 4: SETTINGS & DEV SANDBOX ---
 with tab4:

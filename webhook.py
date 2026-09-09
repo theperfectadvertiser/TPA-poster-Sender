@@ -228,11 +228,42 @@ def capture_message():
                             # Save media message details with public Render media URL and base64 representation to DB
                             db.save_message(from_phone, "client", f"📷 Incoming Image: {public_media_url}", msg_id, media_b64=media_b64)
                             
+                        # Process audio / voice note messages
+                        elif msg_type == "audio":
+                            audio_obj = msg.get("audio", {})
+                            audio_id = audio_obj.get("id")
+                            is_voice = audio_obj.get("voice", False)
+                            
+                            label = "🎤 Voice Message" if is_voice else "🎵 Audio Message"
+                            print(f"[INBOX] Incoming {label} from {contact_name} ({from_phone}). Media ID: {audio_id}")
+                            
+                            # Download audio bytes as base64
+                            media_b64 = get_whatsapp_media_base64(audio_id) if audio_id else None
+                            db.save_message(from_phone, "client", label, msg_id, media_b64=media_b64)
+                            
+                        # Process video messages
+                        elif msg_type == "video":
+                            video_obj = msg.get("video", {})
+                            video_id = video_obj.get("id")
+                            caption = video_obj.get("caption", "Video")
+                            print(f"[INBOX] Incoming VIDEO from {contact_name} ({from_phone}). Media ID: {video_id}")
+                            media_b64 = get_whatsapp_media_base64(video_id) if video_id else None
+                            db.save_message(from_phone, "client", f"🎥 Video: {caption}", msg_id, media_b64=media_b64)
+                            
+                        # Process document messages
+                        elif msg_type == "document":
+                            doc_obj = msg.get("document", {})
+                            doc_id = doc_obj.get("id")
+                            doc_name = doc_obj.get("filename", "document.pdf")
+                            print(f"[INBOX] Incoming DOCUMENT from {contact_name} ({from_phone}). Filename: {doc_name}")
+                            media_b64 = get_whatsapp_media_base64(doc_id) if doc_id else None
+                            db.save_message(from_phone, "client", f"📄 Document: {doc_name}", msg_id, media_b64=media_b64)
+                            
                         else:
-                            # Handle other types like documents, buttons, etc.
-                            body = f"[Sent a {msg_type} message]"
+                            # Handle other types like location, buttons, etc.
+                            body = f"[{msg_type.capitalize()} message received]"
                             db.save_message(from_phone, "client", body, msg_id)
-                            print(f"[INBOX] Received non-text message type: {msg_type} from {from_phone}")
+                            print(f"[INBOX] Received message type: {msg_type} from {from_phone}")
                         
                         # Auto-register client in clients database if not present
                         try:
