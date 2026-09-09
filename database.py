@@ -565,3 +565,73 @@ def get_latest_incoming_message():
         return None
     finally:
         conn.close()
+
+def get_today_broadcast_delivery_status(category_filter="All"):
+    """
+    Returns a DataFrame of active clients with their broadcast delivery status for today.
+    Columns: [Client ID, Name, Phone, Category, Delivery Status, Sent Time, Message ID]
+    """
+    conn = get_db_connection()
+    try:
+        from datetime import datetime, timezone
+        today_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d 00:00:00')
+        
+        cat_clause = ""
+        params = []
+        if category_filter and category_filter != "All":
+            cat_clause = "AND category = ?"
+            params.append(category_filter)
+            
+        clients_query = f"""
+            SELECT id, client_id as "Client ID", name as "Name", phone as "Phone", category as "Category", status as "Status"
+            FROM clients
+            WHERE status = 'Active' {cat_clause}
+            ORDER BY name ASC
+        """
+        clients_df = pd.read_sql_query(clients_query, conn, params=params)
+        
+        if clients_df.empty:
+            return clients_df
+            
+        sent_query = f"""
+            SELECT phone, MAX(timestamp) as timestamp, MAX(msg_id) as msg_id
+            FROM messages
+            WHERE sender = 'business' AND timestamp >= '{today_utc}'
+            GROUP BY phone
+        """
+        sent_df = pd.read_sql_query(sent_query, conn)
+        
+        sent_map = {}
+        for _, r in sent_df.iterrows():
+            clean_p = "".join(filter(str.isdigit, str(r['phone'])))
+            if clean_p:
+                sent_map[clean_p] = (r['timestamp'], r['msg_id'])
+                if len(clean_p) >= 10:
+                    sent_map[clean_p[-10:]] = (r['timestamp'], r['msg_id'])
+                    
+        status_list = []
+        time_list = []
+        msg_list = []
+        
+        for _, r in clients_df.iterrows():
+            clean_cp = "".join(filter(str.isdigit, str(r['Phone'])))
+            info = sent_map.get(clean_cp) or (sent_map.get(clean_cp[-10:]) if len(clean_cp) >= 10 else None)
+            if info:
+                status_list.append("SENT")
+                time_list.append(info[0])
+                msg_list.append(info[1])
+            else:
+                status_list.append("NOT_SENT")
+                time_list.append(None)
+                msg_list.append(None)
+                
+        clients_df['Delivery Status'] = status_list
+        clients_df['Sent Time'] = time_list
+        clients_df['Message ID'] = msg_list
+        return clients_df
+    except Exception as e:
+        print(f"Error in get_today_broadcast_delivery_status: {e}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+

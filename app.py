@@ -43,6 +43,27 @@ def format_timestamp_local(ts_val):
     except Exception:
         return str(ts_val).split(".")[0]
 
+def make_optimized_thumbnail_b64(file_bytes, max_width=450, quality=75):
+    """Generates an ultra-lightweight JPEG thumbnail base64 string (~30KB) to prevent database bloat and speed up delivery."""
+    try:
+        from PIL import Image
+        import io
+        import base64
+        img = Image.open(io.BytesIO(file_bytes))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        w, h = img.size
+        if w > max_width:
+            new_h = int(h * (max_width / w))
+            img = img.resize((max_width, new_h), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        import base64
+        return base64.b64encode(file_bytes).decode()
+
+
 # Page Config with Tab Icon & Title
 st.set_page_config(
     page_title="TPA Poster Sender | WhatsApp Bulk Engine",
@@ -561,6 +582,48 @@ with tab1:
         # Get filtered recipients
         target_df, target_count = db.get_clients_dataframe(category_filter=selected_category, status_filter="Active")
         
+        # Real-Time Delivery Tracker for Selected Category
+        today_delivery_df = db.get_today_broadcast_delivery_status(category_filter=selected_category)
+        sent_today_count = 0
+        unsent_today_count = target_count
+        
+        if not today_delivery_df.empty:
+            sent_today_count = int((today_delivery_df['Delivery Status'] == 'SENT').sum())
+            unsent_today_count = int((today_delivery_df['Delivery Status'] == 'NOT_SENT').sum())
+            
+            st.markdown(f"##### 📊 Delivery Status Tracker ({selected_category})")
+            col_m1, col_m2, col_m3 = st.columns(3)
+            with col_m1:
+                st.metric("Total Active Clients", target_count)
+            with col_m2:
+                st.metric("✅ Sent Today", sent_today_count)
+            with col_m3:
+                st.metric("⏳ Not Sent Today", unsent_today_count)
+                
+            col_s1, col_s2 = st.columns([3, 1])
+            with col_s1:
+                skip_already_sent = st.checkbox(
+                    "⚡ Only Send to Unsent Clients Today (Skip clients who already received a poster today)", 
+                    value=True if sent_today_count > 0 else False,
+                    help="Ensures that clients who already received today's message are skipped to avoid duplicate dispatches."
+                )
+            with col_s2:
+                with st.popover("🔍 View Client Status List"):
+                    st.dataframe(today_delivery_df[['Name', 'Phone', 'Category', 'Delivery Status', 'Sent Time']], use_container_width=True)
+                    st.download_button(
+                        "📥 Download CSV",
+                        data=today_delivery_df.to_csv(index=False),
+                        file_name=f"delivery_status_{selected_category}_{time.strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                    
+            if skip_already_sent:
+                unsent_phones = set(today_delivery_df[today_delivery_df['Delivery Status'] == 'NOT_SENT']['Phone'])
+                clean_unsent = {"".join(filter(str.isdigit, str(p)))[-10:] for p in unsent_phones}
+                target_df = target_df[target_df['Phone'].astype(str).apply(lambda p: "".join(filter(str.isdigit, p))[-10:] in clean_unsent)]
+                target_count = len(target_df)
+                
     st.info(f"🎯 Ready to target **{target_count}** client(s) matching your filter settings.")
     
     st.markdown("### 2. Upload and Prepare Daily Poster(s)")
@@ -636,15 +699,18 @@ with tab1:
             # Start timer
             start_time = time.time()
             
-            # 1. Media caching (Upload images to Meta first in Live Mode)
-            # Map filenames to cached media IDs
+            # 1. Media caching & Pre-computing ultra-lightweight thumbnails
             cached_media_map = {}
-            if send_mode == "Live WhatsApp Broadcast":
-                status_text.text("⚙️ Initializing: Caching daily poster(s) onto Meta Cloud API...")
-                for file in poster_files:
+            cached_thumbnail_map = {}
+            
+            status_text.text("⚙️ Initializing: Caching daily poster(s) onto Meta Cloud & preparing thumbnails...")
+            for i, file in enumerate(poster_files):
+                file_bytes = file.getvalue()
+                # Pre-generate lightweight thumbnail once (~30KB) to ensure super-fast DB inserts
+                cached_thumbnail_map[file.name] = make_optimized_thumbnail_b64(file_bytes)
+                
+                if send_mode == "Live WhatsApp Broadcast":
                     try:
-                        # Read file bytes
-                        file_bytes = file.getvalue()
                         media_id = upload_image_to_meta(file_bytes, file.name, file.type)
                         cached_media_map[file.name] = media_id
                         log_content += f"[{time.strftime('%H:%M:%S')}] Cached poster '{file.name}' to Meta Cloud. Media ID: {media_id}\n"
@@ -652,109 +718,110 @@ with tab1:
                     except Exception as e:
                         st.error(f"Failed to cache daily poster image: {str(e)}")
                         st.stop()
-            else:
-                # Simulated Mode - fake IDs
-                for i, file in enumerate(poster_files):
+                else:
                     cached_media_map[file.name] = f"sim_media_id_{i}"
+                    
+            if send_mode != "Live WhatsApp Broadcast":
                 log_content += f"[{time.strftime('%H:%M:%S')}] Simulated caching for {len(poster_files)} poster(s) complete.\n"
                 log_terminal.code(log_content, language="text", wrap_lines=True)
             
-            # 2. Main recipient loop
-            success_count = 0
-            fail_count = 0
+            # Set protected running flag to prevent background listener interrupts
+            st.session_state["broadcast_is_running"] = True
             
-            # Iterate through clients
-            for idx, row in target_df.iterrows():
-                client_db_id = row['id']
-                client_id = row['Client ID']
-                c_name = row['Name']
-                c_phone = row['Phone']
+            try:
+                # 2. Main recipient loop
+                success_count = 0
+                fail_count = 0
                 
-                # Extract 10-digit number for phone number matching
-                short_phone = c_phone[-10:] if len(c_phone) >= 10 else c_phone
-                
-                if match_by_filename:
-                    # Filter poster files matching the client's phone number
-                    matched_files = []
-                    for file in poster_files:
-                        clean_name = os.path.splitext(file.name)[0]
-                        if (short_phone in clean_name) or (c_phone in clean_name):
-                            matched_files.append(file)
-                            
-                    if not matched_files:
-                        log_msg = f"[{time.strftime('%H:%M:%S')}] SKIPPED ⏭️ -> {c_name} ({c_phone}) | Reason: No matching poster filename found.\n"
+                # Iterate through clients
+                for idx, row in target_df.iterrows():
+                    client_db_id = row['id']
+                    client_id = row['Client ID']
+                    c_name = row['Name']
+                    c_phone = row['Phone']
+                    
+                    # Extract 10-digit number for phone number matching
+                    short_phone = c_phone[-10:] if len(c_phone) >= 10 else c_phone
+                    
+                    if match_by_filename:
+                        # Filter poster files matching the client's phone number
+                        matched_files = []
+                        for file in poster_files:
+                            clean_name = os.path.splitext(file.name)[0]
+                            if (short_phone in clean_name) or (c_phone in clean_name):
+                                matched_files.append(file)
+                                
+                        if not matched_files:
+                            log_msg = f"[{time.strftime('%H:%M:%S')}] SKIPPED ⏭️ -> {c_name} ({c_phone}) | Reason: No matching poster filename found.\n"
+                            log_content += log_msg
+                            log_terminal.code(log_content, language="text", wrap_lines=True)
+                            continue
+                    else:
+                        # Default: Send all files to all clients
+                        matched_files = poster_files
+                    
+                    # Check for each matched poster
+                    for img_idx, file in enumerate(matched_files):
+                        poster_name = file.name
+                        media_id = cached_media_map[poster_name]
+                        poster_b64 = cached_thumbnail_map.get(poster_name)
+                        
+                        status_text.text(f"Sending Poster {img_idx+1}/{len(matched_files)} to ({idx+1}/{target_count}): {c_name}...")
+                        
+                        if send_mode == "Live WhatsApp Broadcast":
+                            res = send_whatsapp_template(
+                                to_phone=c_phone, 
+                                client_name=c_name, 
+                                media_id=media_id,
+                                include_name=include_name_param
+                            )
+                            if res["status"] == "SUCCESS":
+                                success_count += 1
+                                log_msg = f"[{time.strftime('%H:%M:%S')}] Live SUCCESS ✅ -> {c_name} ({c_phone}) | MsgID: {res['message_id']} | Poster: {poster_name}\n"
+                                log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SUCCESS", "Detail": res['message_id']})
+                                db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", res['message_id'], media_b64=poster_b64)
+                            else:
+                                fail_count += 1
+                                log_msg = f"[{time.strftime('%H:%M:%S')}] Live FAILED ❌ -> {c_name} ({c_phone}) | Reason: {res['reason']} | Poster: {poster_name}\n"
+                                log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "FAILED", "Detail": res['reason']})
+                        else:
+                            # Simulation
+                            time.sleep(0.05) # quicker processing in simulation
+                            success_count += 1
+                            log_msg = f"[{time.strftime('%H:%M:%S')}] Sim SUCCESS ✅ -> {c_name} ({c_phone}) | Poster: {poster_name}\n"
+                            log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SIMULATED SUCCESS", "Detail": "None"})
+                            db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", media_b64=poster_b64)
+                        
                         log_content += log_msg
                         log_terminal.code(log_content, language="text", wrap_lines=True)
-                        continue
-                else:
-                    # Default: Send all files to all clients
-                    matched_files = poster_files
+                    
+                    # Apply rate limit delay between clients
+                    if idx < target_count - 1:
+                        time.sleep(ANTI_BAN_DELAY)
+                        
+                    # Update progress bar
+                    progress_bar.progress((idx + 1) / target_count)
+                    
+                elapsed_time = round(time.time() - start_time, 2)
+                status_text.text(f"🏁 Broadcast finished in {elapsed_time}s! Success: {success_count} | Failures: {fail_count}")
                 
-                # Check for each matched poster
-                for img_idx, file in enumerate(matched_files):
-                    poster_name = file.name
-                    media_id = cached_media_map[poster_name]
-                    
-                    # Convert file bytes to base64 for persistent database storage
-                    try:
-                        import base64
-                        poster_b64 = base64.b64encode(file.getvalue()).decode()
-                    except Exception:
-                        poster_b64 = None
-                    
-                    status_text.text(f"Sending Poster {img_idx+1}/{len(matched_files)} to ({idx+1}/{target_count}): {c_name}...")
-                    
-                    if send_mode == "Live WhatsApp Broadcast":
-                        res = send_whatsapp_template(
-                            to_phone=c_phone, 
-                            client_name=c_name, 
-                            media_id=media_id,
-                            include_name=include_name_param
-                        )
-                        if res["status"] == "SUCCESS":
-                            success_count += 1
-                            log_msg = f"[{time.strftime('%H:%M:%S')}] Live SUCCESS ✅ -> {c_name} ({c_phone}) | MsgID: {res['message_id']} | Poster: {poster_name}\n"
-                            log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SUCCESS", "Detail": res['message_id']})
-                            db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", res['message_id'], media_b64=poster_b64)
-                        else:
-                            fail_count += 1
-                            log_msg = f"[{time.strftime('%H:%M:%S')}] Live FAILED ❌ -> {c_name} ({c_phone}) | Reason: {res['reason']} | Poster: {poster_name}\n"
-                            log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "FAILED", "Detail": res['reason']})
-                    else:
-                        # Simulation
-                        time.sleep(0.1) # quicker processing in simulation
-                        success_count += 1
-                        log_msg = f"[{time.strftime('%H:%M:%S')}] Sim SUCCESS ✅ -> {c_name} ({c_phone}) | Poster: {poster_name}\n"
-                        log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SIMULATED SUCCESS", "Detail": "None"})
-                        db.save_message(c_phone, "business", f"🖼️ Sent Poster: {poster_name}", media_b64=poster_b64)
-                    
-                    log_content += log_msg
-                    log_terminal.code(log_content, language="text", wrap_lines=True)
+                st.success("🎉 Today's Daily Poster Broadcast Processed Successfully!")
+                st.cache_data.clear() # Clear cache to refresh delivery tracker stats immediately
                 
-                # Apply rate limit delay between clients
-                if idx < target_count - 1:
-                    time.sleep(ANTI_BAN_DELAY)
-                    
-                # Update progress bar
-                progress_bar.progress((idx + 1) / target_count)
+                # Show summary log report
+                report_df = pd.DataFrame(log_entries)
+                st.dataframe(report_df, use_container_width=True)
                 
-            elapsed_time = round(time.time() - start_time, 2)
-            status_text.text(f"🏁 Broadcast finished in {elapsed_time}s! Success: {success_count} | Failures: {fail_count}")
-            
-            st.success("🎉 Today's Daily Poster Broadcast Processed Successfully!")
-            
-            # Show summary log report
-            report_df = pd.DataFrame(log_entries)
-            st.dataframe(report_df, use_container_width=True)
-            
-            # CSV Download
-            csv_data = report_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Dispatch Log Report (CSV)",
-                data=csv_data,
-                file_name=f"dispatch_report_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
+                # CSV Download
+                csv_data = report_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Dispatch Log Report (CSV)",
+                    data=csv_data,
+                    file_name=f"dispatch_report_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+            finally:
+                st.session_state["broadcast_is_running"] = False
     else:
         if target_count == 0:
             st.warning("⚠️ No active clients match your category filter. Add/activate clients in the Database Manager.")
@@ -1342,6 +1409,10 @@ with tab4:
 @st.fragment(run_every=3)
 def global_background_notification_listener():
     try:
+        # Prevent interrupting active broadcasts with st.rerun()
+        if st.session_state.get("broadcast_is_running"):
+            return
+            
         latest_incoming = db.get_latest_incoming_message()
         if latest_incoming:
             if "last_seen_incoming_msg_id" not in st.session_state:
