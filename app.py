@@ -79,6 +79,14 @@ def detect_audio_format(audio_bytes):
         return "audio/aac"
     return "audio/ogg"
 
+def safe_rerun():
+    """Safely triggers a rerun. Uses scope='fragment' if inside an active fragment rerun, else standard rerun."""
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
+
+
 
 
 # Page Config with Tab Icon & Title
@@ -907,15 +915,13 @@ with tab2:
                     st.error("Name and Phone fields are required.")
                 else:
                     try:
-                        # Auto generate if not provided
-                        if not new_id.strip():
-                            new_id = f"TPA-{filtered_total + 1:04d}"
-                        
-                        db.add_client(new_id, new_name, new_phone, new_cat, "Active", DEFAULT_COUNTRY_CODE)
-                        st.success(f"✅ Successfully added '{new_name}' to Master database!")
+                        assigned_id = db.add_client(new_id, new_name, new_phone, new_cat, "Active", DEFAULT_COUNTRY_CODE)
+                        st.success(f"✅ Successfully added '{new_name}' (ID: {assigned_id}) to Master database!")
+                        st.cache_data.clear()
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error adding client: {str(e)}")
+
                         
     # 2. Bulk Upload Sheet
     with action_tabs[1]:
@@ -1140,7 +1146,7 @@ with tab3:
             with col_c_ref:
                 if st.button("🔄 Refresh", key="crm_refresh_btn", use_container_width=True):
                     st.cache_data.clear()
-                    st.rerun(scope="fragment")
+                    safe_rerun()
             with col_c_info:
                 st.caption("🟢 Instant Sync Active")
                     
@@ -1194,10 +1200,9 @@ with tab3:
                     with st.container(height=380):
                         selected_label = st.radio("Select Chat", options, index=default_index, label_visibility="collapsed")
                         if selected_label:
-                            new_selected_phone = phone_map[selected_label]
-                            if new_selected_phone != selected_phone:
-                                st.session_state["selected_phone"] = new_selected_phone
-                                st.rerun(scope="fragment")
+                            selected_phone = phone_map[selected_label]
+                            st.session_state["selected_phone"] = selected_phone
+
             except Exception as e:
                 st.error(f"Error loading conversations: {e}")
 
@@ -1296,7 +1301,7 @@ with tab3:
                 if st.button("👈 Back to Conversations List", key="mobile_back_btn", use_container_width=True):
                     st.session_state["selected_phone"] = None
                     st.cache_data.clear()
-                    st.rerun(scope="fragment")
+                    safe_rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
 
                 # Get client details directly from cached phone_to_name map
@@ -1329,9 +1334,10 @@ with tab3:
                                 db.save_message(selected_phone, "business", reply_text, res["message_id"])
                                 st.success("Reply dispatched successfully!")
                                 st.cache_data.clear()
-                                st.rerun(scope="fragment")
+                                safe_rerun()
                             else:
                                 st.error(f"Failed to dispatch reply: {res['reason']}")
+
                                 
                 # Forward Message Panel (collapsible expander for zero performance impact)
                 with st.expander("➡️ Forward Message to Another Client or Team", expanded=False):
@@ -1400,9 +1406,10 @@ with tab3:
                                                 db.save_message(fw_target_phone, "business", f"[Forwarded] {selected_fw_text}", res["message_id"])
                                                 st.success(f"Forwarded successfully to {fw_target_phone}!")
                                                 time.sleep(0.5)
-                                                st.rerun(scope="fragment")
+                                                safe_rerun()
                                             else:
                                                 st.error(f"Failed to forward: {res['reason']}")
+
                                     else:
                                         st.warning("Please specify a target phone number.")
                         else:

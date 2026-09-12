@@ -208,8 +208,38 @@ def clean_phone_number(phone, default_country_code="91"):
         
     return cleaned
 
+def get_max_client_id_num(cursor=None):
+    """Returns the maximum numerical suffix of all existing TPA-XXXX client IDs."""
+    close_conn = False
+    if cursor is None:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        close_conn = True
+    try:
+        cursor.execute("SELECT client_id FROM clients")
+        rows = cursor.fetchall()
+        max_num = 0
+        for r in rows:
+            cid = r[0] if isinstance(r, (list, tuple)) else r['client_id']
+            if cid and str(cid).startswith("TPA-"):
+                try:
+                    num_part = int(str(cid).split("-")[1])
+                    if num_part > max_num:
+                        max_num = num_part
+                except (ValueError, IndexError):
+                    pass
+        return max_num
+    finally:
+        if close_conn:
+            cursor.close()
+            conn.close()
+
+def generate_next_client_id():
+    """Generates the next guaranteed unique sequential client_id (e.g. TPA-0141)."""
+    return f"TPA-{get_max_client_id_num() + 1:04d}"
+
 def add_client(client_id, name, phone, category, status="Active", default_country_code="91"):
-    """Adds a new client to the database."""
+    """Adds a new client to the database. Auto-generates next guaranteed unique ID if blank or colliding."""
     cleaned_phone = clean_phone_number(phone, default_country_code)
     if not cleaned_phone:
         raise ValueError("Invalid phone number")
@@ -217,17 +247,30 @@ def add_client(client_id, name, phone, category, status="Active", default_countr
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        # If client_id is not provided or empty, auto-generate unique ID
+        if not client_id or not str(client_id).strip():
+            client_id = f"TPA-{get_max_client_id_num(cursor) + 1:04d}"
+        else:
+            client_id = str(client_id).strip()
+            
+        # Verify uniqueness to prevent duplicate key constraint violations
+        cursor.execute("SELECT 1 FROM clients WHERE client_id = ?", (client_id,))
+        if cursor.fetchone():
+            # If specified ID already exists, auto-increment to next available ID
+            client_id = f"TPA-{get_max_client_id_num(cursor) + 1:04d}"
+
         cursor.execute(
             "INSERT INTO clients (client_id, name, phone, category, status) VALUES (?, ?, ?, ?, ?)",
-            (client_id.strip(), name.strip(), cleaned_phone, category.strip() if category else "General", status)
+            (client_id, name.strip(), cleaned_phone, category.strip() if category else "General", status)
         )
         conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        # Client ID must be unique
-        raise ValueError(f"Client ID '{client_id}' already exists.")
+        return client_id
+    except Exception as e:
+        conn.rollback()
+        raise ValueError(f"Failed to add client: {str(e)}")
     finally:
         conn.close()
+
 
 def update_client(db_id, client_id, name, phone, category, status, default_country_code="91"):
     """Updates an existing client by database row ID."""
@@ -372,9 +415,8 @@ def bulk_import(df, default_country_code="91"):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Get last client number for ID generation fallback
-    cursor.execute("SELECT COUNT(*) FROM clients")
-    existing_count = cursor.fetchone()[0]
+    # Get highest client number for ID generation fallback
+    max_existing_id = get_max_client_id_num(cursor)
     
     success_count = 0
     failed_records = []
@@ -396,7 +438,8 @@ def bulk_import(df, default_country_code="91"):
         if "client_id" in df_mapped.columns and not pd.isna(row["client_id"]) and str(row["client_id"]).strip():
             client_id = str(row["client_id"]).strip()
         else:
-            client_id = f"TPA-{existing_count + success_count + 1:04d}"
+            client_id = f"TPA-{max_existing_id + success_count + 1:04d}"
+
             
         category = str(row["category"]).strip() if "category" in df_mapped.columns and not pd.isna(row["category"]) else "General"
         status = str(row["status"]).strip() if "status" in df_mapped.columns and not pd.isna(row["status"]) else "Active"
