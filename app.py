@@ -660,14 +660,25 @@ with tab1:
         accept_multiple_files=True
     )
     
-    # Previews of uploaded images
+    # Previews of uploaded images (Optimized for Bulk Scale: 100+ files)
     if poster_files:
-        st.success(f"✅ Loaded {len(poster_files)} poster file(s) successfully.")
-        cols = st.columns(min(len(poster_files), 4))
-        for idx, file in enumerate(poster_files):
-            col_idx = idx % 4
-            with cols[col_idx]:
-                st.image(file, caption=f"Poster {idx+1}: {file.name}", use_container_width=True)
+        total_size_mb = sum(len(f.getvalue()) for f in poster_files) / (1024 * 1024)
+        st.success(f"✅ Loaded **{len(poster_files)}** poster file(s) successfully ({total_size_mb:.1f} MB total).")
+        
+        # Only render preview for up to 4 images to prevent memory spikes & browser crashes on 100+ uploads
+        preview_count = min(len(poster_files), 4)
+        cols = st.columns(preview_count)
+        for idx in range(preview_count):
+            with cols[idx]:
+                st.image(poster_files[idx], caption=f"Sample {idx+1}: {poster_files[idx].name}", use_container_width=True)
+                
+        if len(poster_files) > 4:
+            with st.expander(f"📁 View List of all {len(poster_files)} Uploaded Files"):
+                file_summary = [
+                    {"#": i + 1, "Filename": f.name, "Size (KB)": round(len(f.getvalue()) / 1024, 1)}
+                    for i, f in enumerate(poster_files)
+                ]
+                st.dataframe(pd.DataFrame(file_summary), use_container_width=True, height=200)
                 
     st.markdown("### 3. Send Parameters")
     col_p1, col_p2 = st.columns(2)
@@ -726,37 +737,39 @@ with tab1:
             # Start timer
             start_time = time.time()
             
-            # 1. Media caching & Pre-computing ultra-lightweight thumbnails
+            # Build fast lookup dictionary for Targeted Dispatch
+            poster_lookup = {}
+            for f in poster_files:
+                clean_name = os.path.splitext(f.name)[0].strip()
+                poster_lookup[f.name] = f
+                poster_lookup[clean_name] = f
+                digits_only = "".join(filter(str.isdigit, clean_name))
+                if digits_only:
+                    poster_lookup[digits_only] = f
+                    if len(digits_only) >= 10:
+                        poster_lookup[digits_only[-10:]] = f
+                        
             cached_media_map = {}
             cached_thumbnail_map = {}
             
-            status_text.text("⚙️ Initializing: Caching daily poster(s) onto Meta Cloud & preparing thumbnails...")
-            for i, file in enumerate(poster_files):
-                file_bytes = file.getvalue()
-                # Pre-generate lightweight thumbnail once (~30KB) to ensure super-fast DB inserts
-                cached_thumbnail_map[file.name] = make_optimized_thumbnail_b64(file_bytes)
-                
-                if send_mode == "Live WhatsApp Broadcast":
-                    try:
-                        media_id = upload_image_to_meta(file_bytes, file.name, file.type)
-                        cached_media_map[file.name] = media_id
-                        log_content += f"[{time.strftime('%H:%M:%S')}] Cached poster '{file.name}' to Meta Cloud. Media ID: {media_id}\n"
-                        log_terminal.code(log_content, language="text", wrap_lines=True)
-                    except Exception as e:
-                        st.error(f"Failed to cache daily poster image: {str(e)}")
-                        st.stop()
-                else:
-                    cached_media_map[file.name] = f"sim_media_id_{i}"
-                    
-            if send_mode != "Live WhatsApp Broadcast":
-                log_content += f"[{time.strftime('%H:%M:%S')}] Simulated caching for {len(poster_files)} poster(s) complete.\n"
-                log_terminal.code(log_content, language="text", wrap_lines=True)
+            def get_or_upload_poster_media(file_obj):
+                """Caches and uploads poster image to Meta on demand to avoid blocking upfront."""
+                p_name = file_obj.name
+                if p_name not in cached_media_map:
+                    f_bytes = file_obj.getvalue()
+                    cached_thumbnail_map[p_name] = make_optimized_thumbnail_b64(f_bytes)
+                    if send_mode == "Live WhatsApp Broadcast":
+                        mid = upload_image_to_meta(f_bytes, p_name, file_obj.type)
+                        cached_media_map[p_name] = mid
+                    else:
+                        cached_media_map[p_name] = f"sim_media_{p_name}"
+                return cached_media_map[p_name], cached_thumbnail_map[p_name]
             
             # Set protected running flag to prevent background listener interrupts
             st.session_state["broadcast_is_running"] = True
             
             try:
-                # 2. Main recipient loop
+                # Main recipient loop
                 success_count = 0
                 fail_count = 0
                 
@@ -765,35 +778,44 @@ with tab1:
                     client_db_id = row['id']
                     client_id = row['Client ID']
                     c_name = row['Name']
-                    c_phone = row['Phone']
-                    
-                    # Extract 10-digit number for phone number matching
+                    c_phone = str(row['Phone']).strip()
                     short_phone = c_phone[-10:] if len(c_phone) >= 10 else c_phone
                     
                     if match_by_filename:
-                        # Filter poster files matching the client's phone number
-                        matched_files = []
-                        for file in poster_files:
-                            clean_name = os.path.splitext(file.name)[0]
-                            if (short_phone in clean_name) or (c_phone in clean_name):
-                                matched_files.append(file)
-                                
-                        if not matched_files:
+                        # Instant matching using pre-built lookup
+                        matched_file = poster_lookup.get(c_phone) or poster_lookup.get(short_phone)
+                        if not matched_file:
+                            # Fallback substring search
+                            for f in poster_files:
+                                f_clean = os.path.splitext(f.name)[0]
+                                if (short_phone in f_clean) or (c_phone in f_clean):
+                                    matched_file = f
+                                    break
+                                    
+                        if not matched_file:
                             log_msg = f"[{time.strftime('%H:%M:%S')}] SKIPPED ⏭️ -> {c_name} ({c_phone}) | Reason: No matching poster filename found.\n"
                             log_content += log_msg
                             log_terminal.code(log_content, language="text", wrap_lines=True)
+                            progress_bar.progress((idx + 1) / target_count)
                             continue
+                        matched_files = [matched_file]
                     else:
-                        # Default: Send all files to all clients
                         matched_files = poster_files
                     
-                    # Check for each matched poster
+                    # Dispatch matched posters for this client
                     for img_idx, file in enumerate(matched_files):
                         poster_name = file.name
-                        media_id = cached_media_map[poster_name]
-                        poster_b64 = cached_thumbnail_map.get(poster_name)
+                        status_text.text(f"🚀 Dispatching ({idx+1}/{target_count}): {c_name} | Poster: {poster_name}...")
                         
-                        status_text.text(f"Sending Poster {img_idx+1}/{len(matched_files)} to ({idx+1}/{target_count}): {c_name}...")
+                        try:
+                            media_id, poster_b64 = get_or_upload_poster_media(file)
+                        except Exception as upload_err:
+                            fail_count += 1
+                            log_msg = f"[{time.strftime('%H:%M:%S')}] Media Upload Error ❌ -> {poster_name} | {str(upload_err)}\n"
+                            log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "FAILED", "Detail": str(upload_err)})
+                            log_content += log_msg
+                            log_terminal.code(log_content, language="text", wrap_lines=True)
+                            continue
                         
                         if send_mode == "Live WhatsApp Broadcast":
                             res = send_whatsapp_template(
@@ -813,7 +835,7 @@ with tab1:
                                 log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "FAILED", "Detail": res['reason']})
                         else:
                             # Simulation
-                            time.sleep(0.05) # quicker processing in simulation
+                            time.sleep(0.05)
                             success_count += 1
                             log_msg = f"[{time.strftime('%H:%M:%S')}] Sim SUCCESS ✅ -> {c_name} ({c_phone}) | Poster: {poster_name}\n"
                             log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": poster_name, "Status": "SIMULATED SUCCESS", "Detail": "None"})
@@ -828,6 +850,7 @@ with tab1:
                         
                     # Update progress bar
                     progress_bar.progress((idx + 1) / target_count)
+
                     
                 elapsed_time = round(time.time() - start_time, 2)
                 status_text.text(f"🏁 Broadcast finished in {elapsed_time}s! Success: {success_count} | Failures: {fail_count}")
