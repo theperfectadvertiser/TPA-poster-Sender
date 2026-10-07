@@ -689,6 +689,46 @@ with tab1:
         match_by_filename = st.checkbox("🎯 Targeted Dispatch (Match Filename with Client's Phone)", value=False,
                                          help="Check this if you name your images with client phone numbers (e.g. 9876543210.png). The system will automatically map and send only the matching poster to each client.")
         
+    # Real-time Pre-dispatch Match Verification (Gives immediate heads-up before executing)
+    if target_count > 0 and poster_files and match_by_filename:
+        temp_lookup = {}
+        for f in poster_files:
+            c_fn = os.path.splitext(f.name)[0].strip()
+            temp_lookup[f.name] = True
+            temp_lookup[c_fn] = True
+            for tdm in re.findall(r"\d{10}", c_fn):
+                temp_lookup[tdm] = True
+                temp_lookup[f"{DEFAULT_COUNTRY_CODE}{tdm}"] = True
+            d_only = "".join(filter(str.isdigit, c_fn))
+            if d_only:
+                temp_lookup[d_only] = True
+                if len(d_only) >= 10:
+                    temp_lookup[d_only[-10:]] = True
+                    
+        unmatched_clients_precheck = []
+        for _, r in target_df.iterrows():
+            cp = str(r['Phone']).strip()
+            cp_short = cp[-10:] if len(cp) >= 10 else cp
+            cid = str(r['Client ID']).strip() if 'Client ID' in r else ""
+            cname = str(r['Name']).strip() if 'Name' in r else ""
+            
+            is_m = temp_lookup.get(cp) or temp_lookup.get(cp_short) or (cid and temp_lookup.get(cid))
+            if not is_m:
+                for f in poster_files:
+                    fn_low = os.path.splitext(f.name)[0].lower()
+                    if (cp_short in fn_low) or (cp in fn_low) or (cid and cid.lower() in fn_low):
+                        is_m = True
+                        break
+            if not is_m:
+                unmatched_clients_precheck.append({"Client ID": cid, "Name": cname, "Phone": cp})
+                
+        if unmatched_clients_precheck:
+            st.warning(f"⚠️ **Targeting Notice:** **{len(unmatched_clients_precheck)}** out of **{target_count}** client(s) do NOT have a matching poster image uploaded! These clients will be skipped during dispatch.")
+            with st.expander(f"🔍 Click to view {len(unmatched_clients_precheck)} Client(s) Missing Posters"):
+                st.dataframe(pd.DataFrame(unmatched_clients_precheck), use_container_width=True)
+        else:
+            st.success(f"🎯 **100% Match!** All **{target_count}** client(s) have a matching poster image ready to dispatch.")
+
     # Send execution section
     if target_count > 0 and poster_files:
         st.markdown("### 4. Dispatch Dispatcher")
@@ -743,6 +783,10 @@ with tab1:
                 clean_name = os.path.splitext(f.name)[0].strip()
                 poster_lookup[f.name] = f
                 poster_lookup[clean_name] = f
+                # Extract all 10-digit numbers from filename
+                for ten_digits in re.findall(r"\d{10}", clean_name):
+                    poster_lookup[ten_digits] = f
+                    poster_lookup[f"{DEFAULT_COUNTRY_CODE}{ten_digits}"] = f
                 digits_only = "".join(filter(str.isdigit, clean_name))
                 if digits_only:
                     poster_lookup[digits_only] = f
@@ -772,6 +816,8 @@ with tab1:
                 # Main recipient loop
                 success_count = 0
                 fail_count = 0
+                skipped_count = 0
+                skipped_clients = []
                 
                 # Iterate through clients
                 for idx, row in target_df.iterrows():
@@ -784,16 +830,25 @@ with tab1:
                     if match_by_filename:
                         # Instant matching using pre-built lookup
                         matched_file = poster_lookup.get(c_phone) or poster_lookup.get(short_phone)
+                        if not matched_file and client_id:
+                            matched_file = poster_lookup.get(client_id.strip())
+                            
                         if not matched_file:
                             # Fallback substring search
                             for f in poster_files:
-                                f_clean = os.path.splitext(f.name)[0]
+                                f_clean = os.path.splitext(f.name)[0].lower()
                                 if (short_phone in f_clean) or (c_phone in f_clean):
+                                    matched_file = f
+                                    break
+                                if client_id and client_id.lower() in f_clean:
                                     matched_file = f
                                     break
                                     
                         if not matched_file:
+                            skipped_count += 1
+                            skipped_clients.append({"Client ID": client_id, "Name": c_name, "Phone": c_phone, "Reason": "No matching poster file found"})
                             log_msg = f"[{time.strftime('%H:%M:%S')}] SKIPPED ⏭️ -> {c_name} ({c_phone}) | Reason: No matching poster filename found.\n"
+                            log_entries.append({"Timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "Client ID": client_id, "Name": c_name, "Phone": c_phone, "Poster": "NONE (SKIPPED)", "Status": "SKIPPED", "Detail": "No matching poster filename found"})
                             log_content += log_msg
                             log_terminal.code(log_content, language="text", wrap_lines=True)
                             progress_bar.progress((idx + 1) / target_count)
@@ -850,12 +905,19 @@ with tab1:
                         
                     # Update progress bar
                     progress_bar.progress((idx + 1) / target_count)
-
                     
                 elapsed_time = round(time.time() - start_time, 2)
-                status_text.text(f"🏁 Broadcast finished in {elapsed_time}s! Success: {success_count} | Failures: {fail_count}")
+                status_text.text(f"🏁 Broadcast finished in {elapsed_time}s! Success: {success_count} | Failures: {fail_count} | Skipped: {skipped_count}")
                 
-                st.success("🎉 Today's Daily Poster Broadcast Processed Successfully!")
+                if fail_count == 0 and skipped_count == 0:
+                    st.success("🎉 Today's Daily Poster Broadcast Processed Successfully to all recipients!")
+                else:
+                    st.warning(f"🏁 Broadcast Complete: {success_count} Sent, {fail_count} Failed, {skipped_count} Skipped.")
+                    
+                if skipped_clients:
+                    with st.expander(f"⚠️ View {len(skipped_clients)} Skipped Client(s) (Missing Poster / Filename Mismatch)"):
+                        st.dataframe(pd.DataFrame(skipped_clients), use_container_width=True)
+                        
                 st.cache_data.clear() # Clear cache to refresh delivery tracker stats immediately
                 
                 # Show summary log report
@@ -865,7 +927,7 @@ with tab1:
                 # CSV Download
                 csv_data = report_df.to_csv(index=False)
                 st.download_button(
-                    label="📥 Download Dispatch Log Report (CSV)",
+                    label="📥 Download Complete Dispatch Log Report (CSV)",
                     data=csv_data,
                     file_name=f"dispatch_report_{time.strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"

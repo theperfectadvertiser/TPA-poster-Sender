@@ -188,7 +188,9 @@ def clean_phone_number(phone, default_country_code="91"):
     """
     Cleans a phone number:
     - Removes spaces, parentheses, dashes, and '+'
+    - Strips leading 0 if 11 digits (e.g., 09876543210 -> 9876543210)
     - If the number is 10 digits, prefixes it with the default country code (e.g., 91 for India)
+    - If 13 digits starting with default country code + 0 (e.g., 9109876543210), strips the extra 0
     - Returns a digits-only string
     """
     if not phone or pd.isna(phone):
@@ -201,6 +203,14 @@ def clean_phone_number(phone, default_country_code="91"):
         
     # Remove all non-numeric characters
     cleaned = re.sub(r"\D", "", phone_str)
+    
+    # Strip leading 0 if 11 digits (common in India: 09876543210 -> 9876543210)
+    if len(cleaned) == 11 and cleaned.startswith("0"):
+        cleaned = cleaned[1:]
+        
+    # If 13 digits starting with default country code + 0 (e.g., 9109876543210 -> 919876543210)
+    if default_country_code and len(cleaned) == (len(default_country_code) + 11) and cleaned.startswith(f"{default_country_code}0"):
+        cleaned = f"{default_country_code}{cleaned[len(default_country_code)+1:]}"
     
     # Auto-add country code if it is exactly 10 digits
     if len(cleaned) == 10 and default_country_code:
@@ -326,9 +336,9 @@ def get_clients_dataframe(search_query="", category_filter="All", status_filter=
     query = 'SELECT id, client_id as "Client ID", name as "Name", phone as "Phone", category as "Category", status as "Status", created_at as "Created At" FROM clients WHERE 1=1'
     params = []
     
-    # Apply category filter
+    # Apply category filter (case-insensitive and trimmed)
     if category_filter and category_filter != "All":
-        query += " AND category = ?"
+        query += " AND LOWER(TRIM(category)) = LOWER(TRIM(?))"
         params.append(category_filter)
         
     # Apply status filter
@@ -637,7 +647,7 @@ def get_today_broadcast_delivery_status(category_filter="All"):
         cat_clause = ""
         params = []
         if category_filter and category_filter != "All":
-            cat_clause = "AND category = ?"
+            cat_clause = "AND LOWER(TRIM(category)) = LOWER(TRIM(?))"
             params.append(category_filter)
             
         clients_query = f"""
