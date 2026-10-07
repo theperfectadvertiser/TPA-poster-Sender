@@ -5,6 +5,7 @@ import os
 import time
 import io
 import math
+import re
 import database as db
 import base64
 
