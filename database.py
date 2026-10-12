@@ -62,27 +62,33 @@ def get_pg_pool_streamlit(db_url):
     return _create_pool(db_url)
 
 def get_db_connection():
-    """Returns database connection. Checks for DATABASE_URL to connect to PostgreSQL (Supabase)."""
+    """Returns database connection. Checks for DATABASE_URL to connect to PostgreSQL (Supabase). Falls back to SQLite if PostgreSQL fails."""
     global _connection_pool
     if DATABASE_URL and PSYCOPG2_AVAILABLE:
-        # Check if running inside Streamlit
-        is_streamlit = False
         try:
-            from streamlit.runtime import exists
-            is_streamlit = exists()
-        except ImportError:
-            pass
-            
-        if is_streamlit:
-            pool = get_pg_pool_streamlit(DATABASE_URL)
-        else:
-            if _connection_pool is None:
-                import psycopg2.pool
-                _connection_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
-            pool = _connection_pool
-            
-        conn = pool.getconn()
-        return PostgreSQLPlaceholderConnection(conn, pool)
+            # Check if running inside Streamlit
+            is_streamlit = False
+            try:
+                from streamlit.runtime import exists
+                is_streamlit = exists()
+            except ImportError:
+                pass
+                
+            if is_streamlit:
+                pool = get_pg_pool_streamlit(DATABASE_URL)
+            else:
+                if _connection_pool is None:
+                    import psycopg2.pool
+                    _connection_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
+                pool = _connection_pool
+                
+            conn = pool.getconn()
+            return PostgreSQLPlaceholderConnection(conn, pool)
+        except Exception as e:
+            print(f"[WARNING] PostgreSQL connection failed ({e}). Falling back to local SQLite.")
+            conn = sqlite3.connect(DB_FILE)
+            conn.row_factory = sqlite3.Row
+            return conn
     else:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -355,7 +361,7 @@ def get_clients_dataframe(search_query="", category_filter="All", status_filter=
         params.extend([search_param] * 4)
         
     # Get total count before pagination
-    count_query = f"SELECT COUNT(*) FROM ({query})"
+    count_query = f"SELECT COUNT(*) FROM ({query}) AS subquery_count"
     cursor = conn.cursor()
     cursor.execute(count_query, params)
     total_count = cursor.fetchone()[0]
