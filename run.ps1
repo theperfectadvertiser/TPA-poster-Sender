@@ -1,78 +1,90 @@
 # TPA Antigravity 2.0 - Launcher & Auto-Setup Script
 
 Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "🚀 TPA Antigravity 2.0 - Auto-Setup & Launcher" -ForegroundColor Cyan
+Write-Host "🚀 TPA Poster Sender - Auto-Setup & Launcher" -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 
-# Ensure local bin directory is in PATH for this execution
+# Force TLS 1.2 / TLS 1.3 protocol so Windows PowerShell 5.1 can download from modern HTTPS servers
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    if ([Net.SecurityProtocolType]::Tls13) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13
+    }
+} catch {}
+
+# Ensure local bin directories are in PATH for this execution
 $localBinPath = Join-Path $env:USERPROFILE ".local\bin"
+$cargoBinPath = Join-Path $env:USERPROFILE ".cargo\bin"
 if (-not ($env:PATH -split ';' -contains $localBinPath)) {
     $env:PATH = "$localBinPath;" + $env:PATH
 }
+if (-not ($env:PATH -split ';' -contains $cargoBinPath)) {
+    $env:PATH = "$cargoBinPath;" + $env:PATH
+}
 
-# 1. Check for uv package manager
-Write-Host "[1/4] Checking for 'uv' Python package manager..." -ForegroundColor Gray
+# 1. Check for 'uv' or system Python
+Write-Host "[1/4] Checking Python / Package Manager..." -ForegroundColor Gray
 $uvAvailable = Get-Command uv -ErrorAction SilentlyContinue
 
 if (-not $uvAvailable) {
-    Write-Host "👉 'uv' is not detected. Installing it now (portable, user-level)..." -ForegroundColor Yellow
+    Write-Host "👉 'uv' is not detected. Downloading portable installer..." -ForegroundColor Yellow
     try {
-        # Run uv installer script
-        Invoke-Expression (Invoke-WebRequest -Uri "https://astral.sh/uv/install.ps1" -UseBasicParsing).Content
-        Write-Host "✅ 'uv' installed successfully!" -ForegroundColor Green
+        $installerContent = (Invoke-WebRequest -Uri "https://astral.sh/uv/install.ps1" -UseBasicParsing).Content
+        Invoke-Expression $installerContent
+        $env:PATH = "$localBinPath;$cargoBinPath;" + $env:PATH
+        $uvAvailable = Get-Command uv -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "⚠️ Astral download notice: $($_.Exception.Message)" -ForegroundColor Yellow
+        $wingetAvailable = Get-Command winget -ErrorAction SilentlyContinue
+        if ($wingetAvailable) {
+            Write-Host "👉 Attempting winget install for uv..." -ForegroundColor Yellow
+            winget install --id=astral-sh.uv -e --accept-source-agreements --accept-package-agreements
+            $env:PATH = "$localBinPath;$cargoBinPath;" + $env:PATH
+            $uvAvailable = Get-Command uv -ErrorAction SilentlyContinue
+        }
     }
-    catch {
-        Write-Error "❌ Failed to install 'uv'. Please check your internet connection."
-        Exit 1
-    }
-} else {
-    Write-Host "✅ 'uv' is already installed!" -ForegroundColor Green
 }
 
-# 2. Check virtual environment
-Write-Host "[2/4] Ensuring Python environment exists..." -ForegroundColor Gray
 $venvPath = Join-Path $PSScriptRoot ".venv"
+$venvPython = Join-Path $venvPath "Scripts\python.exe"
 
-if (-not (Test-Path $venvPath)) {
-    Write-Host "👉 Virtual environment not found. Initializing Python 3.12..." -ForegroundColor Yellow
-    try {
-        # Create virtual env using uv (it will fetch Python 3.12 automatically)
+# If uv is available, use uv
+if ($uvAvailable) {
+    Write-Host "✅ Using 'uv' fast package manager!" -ForegroundColor Green
+    if (-not (Test-Path $venvPath)) {
+        Write-Host "[2/4] Initializing Python 3.12 environment..." -ForegroundColor Yellow
         uv venv .venv --python 3.12
-        Write-Host "✅ Python 3.12 environment initialized!" -ForegroundColor Green
     }
-    catch {
-        Write-Error "❌ Failed to initialize virtual environment."
+    Write-Host "[3/4] Installing / Verifying dependencies..." -ForegroundColor Gray
+    & uv pip install -r requirements.txt
+    Write-Host "[4/4] Launching TPA Poster Sender in Chrome..." -ForegroundColor Cyan
+    & uv run streamlit run app.py
+} else {
+    # Fallback to system Python if uv couldn't be installed
+    Write-Host "👉 Checking for system Python..." -ForegroundColor Yellow
+    $pyCmd = $null
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $pyCmd = "python"
+    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
+        $pyCmd = "py"
+    }
+
+    if (-not $pyCmd) {
+        Write-Host "❌ Python is not detected on this computer." -ForegroundColor Red
+        Write-Host "👉 Please install Python (visit https://www.python.org/downloads/ and check 'Add python.exe to PATH')." -ForegroundColor Yellow
+        Write-Host "Press any key to exit..."
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         Exit 1
     }
-} else {
-    Write-Host "✅ Environment exists." -ForegroundColor Green
+
+    Write-Host "✅ Found system Python ($pyCmd)!" -ForegroundColor Green
+    if (-not (Test-Path $venvPath)) {
+        Write-Host "[2/4] Creating virtual environment (.venv)..." -ForegroundColor Yellow
+        & $pyCmd -m venv .venv
+    }
+    Write-Host "[3/4] Installing dependencies via pip..." -ForegroundColor Gray
+    & $venvPython -m pip install --upgrade pip
+    & $venvPython -m pip install -r requirements.txt
+    Write-Host "[4/4] Launching TPA Poster Sender in Chrome..." -ForegroundColor Cyan
+    & $venvPython -m streamlit run app.py
 }
-
-# 3. Install/sync dependencies
-Write-Host "[3/4] Checking and installing dependencies..." -ForegroundColor Gray
-try {
-    # Activate virtual environment temporarily and run pip install via uv
-    & uv pip install -r requirements.txt
-    Write-Host "✅ Dependencies synchronized successfully!" -ForegroundColor Green
-}
-catch {
-    Write-Error "❌ Dependency installation failed."
-    Exit 1
-}
-
-# 4. Preparing client database
-# (Using real cloud Supabase database)
-# & uv run python test_db.py
-
-# Start Webhook server in background
-Write-Host "[Webhook] Starting webhook server in background..." -ForegroundColor Gray
-Start-Process -FilePath "uv" -ArgumentList "run", "python", "webhook.py" -WindowStyle Hidden
-
-# 5. Run Streamlit Application
-Write-Host "[5/5] Launching TPA Poster Sender Web Interface..." -ForegroundColor Cyan
-Write-Host "👉 The app will open automatically in your browser." -ForegroundColor Gray
-Write-Host "👉 Press Ctrl+C in this terminal to stop the application." -ForegroundColor Gray
-Write-Host "---------------------------------------------" -ForegroundColor Cyan
-
-# Start Streamlit application
-& uv run streamlit run app.py
