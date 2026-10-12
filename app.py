@@ -92,7 +92,7 @@ def safe_rerun():
 
 # Page Config with Tab Icon & Title
 st.set_page_config(
-    page_title="TPA Poster Sender | WhatsApp Bulk Engine",
+    page_title="TPA WhatsApp Sender | Bulk Engine & CRM",
     page_icon="📲",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -406,7 +406,7 @@ st.markdown("""
             <span style="font-size: 36px; line-height: 1;">📲</span>
         </div>
         <div>
-            <h1 style="margin: 0; color: #2dd4bf !important; font-size: 32px; font-weight: 800; letter-spacing: -0.5px;">TPA Poster Sender</h1>
+            <h1 style="margin: 0; color: #2dd4bf !important; font-size: 32px; font-weight: 800; letter-spacing: -0.5px;">TPA WhatsApp Sender</h1>
             <p style="margin: 4px 0 0 0; color: #94a3b8; font-size: 15px; font-weight: 500;">Premium WhatsApp Bulk Dispatcher & CRM Engine</p>
         </div>
     </div>
@@ -637,7 +637,7 @@ with tab1:
                 )
             with col_s2:
                 with st.popover("🔍 View Client Status List"):
-                    st.dataframe(today_delivery_df[['Name', 'Phone', 'Category', 'Delivery Status', 'Sent Time']], use_container_width=True)
+                    st.dataframe(today_delivery_df[['Client ID', 'Name', 'Phone', 'Category', 'Delivery Status', 'Sent Time']], use_container_width=True)
                     st.download_button(
                         "📥 Download CSV",
                         data=today_delivery_df.to_csv(index=False),
