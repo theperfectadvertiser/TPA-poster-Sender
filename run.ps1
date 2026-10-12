@@ -60,9 +60,9 @@ catch {
     Exit 1
 }
 
-# 4. Populate database with mock records (if not already done)
-Write-Host "[4/5] Preparing client database (1,500 permanent records)..." -ForegroundColor Gray
-& uv run python test_db.py
+# 4. Preparing client database
+# (Using real cloud Supabase database)
+# & uv run python test_db.py
 
 # Start Webhook server in background
 Write-Host "[Webhook] Starting webhook server in background..." -ForegroundColor Gray

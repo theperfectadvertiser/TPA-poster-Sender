@@ -5,7 +5,8 @@ import os
 import time
 
 DB_FILE = "clients.db"
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DEFAULT_SUPABASE_URL = "postgresql://postgres.uwmrqvxcjcixkklovrll:TPA_Admin_2026%21@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
+DATABASE_URL = os.environ.get("DATABASE_URL") or DEFAULT_SUPABASE_URL
 
 # Try to import psycopg2 for PostgreSQL support
 try:
