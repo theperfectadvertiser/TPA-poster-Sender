@@ -293,9 +293,16 @@ else:
     WABA_ID = st.session_state.get("WABA_ID", db_waba_id)
     ACCESS_TOKEN = st.session_state.get("ACCESS_TOKEN", db_access_token)
 
+# Auto-sync Meta templates into session state if credentials are valid
+if "meta_templates" not in st.session_state and ACCESS_TOKEN and (WABA_ID or PHONE_NUMBER_ID):
+    try:
+        st.session_state["meta_templates"] = fetch_templates_from_meta(PHONE_NUMBER_ID, ACCESS_TOKEN, WABA_ID)
+    except Exception:
+        st.session_state["meta_templates"] = []
+
 # Template Name and Language code selection
 TEMPLATE_NAME = "daily_poster_delivery"
-LANGUAGE_CODE = "en_US"
+LANGUAGE_CODE = "en"
 
 if "meta_templates" in st.session_state and st.session_state["meta_templates"]:
     templates = st.session_state["meta_templates"]
@@ -304,36 +311,40 @@ if "meta_templates" in st.session_state and st.session_state["meta_templates"]:
     if not unique_names:
         st.sidebar.warning("No approved templates found in WABA.")
         TEMPLATE_NAME = st.sidebar.text_input("Template Name", value="daily_poster_delivery")
-        LANGUAGE_CODE = st.sidebar.text_input("Language Code", value="en_US")
+        LANGUAGE_CODE = st.sidebar.text_input("Language Code", value="en")
     else:
+        # Default to daily_poster_delivery if present
+        default_idx = unique_names.index("daily_poster_delivery") if "daily_poster_delivery" in unique_names else 0
         selected_template = st.sidebar.selectbox(
             "Select Approved Template",
             unique_names,
-            index=0
+            index=default_idx
         )
         
         # Get language codes for selected template name
         langs = sorted(list(set([t.get("language") for t in templates if t.get("name") == selected_template])))
+        default_lang_idx = langs.index("en") if "en" in langs else 0
         selected_lang = st.sidebar.selectbox(
             "Select Language",
             langs,
-            index=0
+            index=default_lang_idx
         )
         
         TEMPLATE_NAME = selected_template
         LANGUAGE_CODE = selected_lang
         
         # Show small summary of the template structure
-        matched_t = next(t for t in templates if t.get("name") == selected_template and t.get("language") == selected_lang)
+        matched_t = next((t for t in templates if t.get("name") == selected_template and t.get("language") == selected_lang), None)
         header_format = "None"
         body_text = ""
-        for comp in matched_t.get("components", []):
-            if comp.get("type") == "HEADER":
-                header_format = comp.get("format", "TEXT")
-            elif comp.get("type") == "BODY":
-                body_text = comp.get("text", "")
-                
-        st.sidebar.info(f"📋 **Type:** {header_format} Header\n📝 **Body Preview:** {body_text[:80]}...")
+        if matched_t:
+            for comp in matched_t.get("components", []):
+                if comp.get("type") == "HEADER":
+                    header_format = comp.get("format", "TEXT")
+                elif comp.get("type") == "BODY":
+                    body_text = comp.get("text", "")
+                    
+            st.sidebar.info(f"📋 **Type:** {header_format} Header\n📝 **Body Preview:** {body_text[:80]}...")
         
         # Allow override check
         if st.sidebar.checkbox("Edit details manually"):
@@ -348,8 +359,8 @@ else:
     )
     LANGUAGE_CODE = st.sidebar.text_input(
         "Language Code", 
-        value=st.session_state.get("LANGUAGE_CODE", "en_US"),
-        help="e.g. en_US, hi_IN"
+        value=st.session_state.get("LANGUAGE_CODE", "en"),
+        help="e.g. en, hi_IN"
     )
 
 st.sidebar.markdown("---")
@@ -637,7 +648,8 @@ with tab1:
                 )
             with col_s2:
                 with st.popover("🔍 View Client Status List"):
-                    st.dataframe(today_delivery_df[['Client ID', 'Name', 'Phone', 'Category', 'Delivery Status', 'Sent Time']], use_container_width=True)
+                    cols_to_show = [c for c in ['Client ID', 'Name', 'Phone', 'Category', 'Delivery Status', 'Sent Time', 'Error Reason', 'Message ID'] if c in today_delivery_df.columns]
+                    st.dataframe(today_delivery_df[cols_to_show], use_container_width=True)
                     st.download_button(
                         "📥 Download CSV",
                         data=today_delivery_df.to_csv(index=False),

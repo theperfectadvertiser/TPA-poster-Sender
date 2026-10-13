@@ -280,6 +280,23 @@ def capture_message():
                                 print(f"[DB] Auto-registered new client: {contact_name} ({from_phone})")
                         except Exception as e:
                             print(f"[ERROR] Auto-registering client failed: {str(e)}")
+                            
+                # Check if there are message delivery status updates
+                if "statuses" in value:
+                    for status_obj in value.get("statuses", []):
+                        status_msg_id = status_obj.get("id")
+                        msg_status = status_obj.get("status") # sent, delivered, read, failed
+                        recipient_phone = status_obj.get("recipient_id")
+                        errors = status_obj.get("errors", [])
+                        error_detail = None
+                        if errors:
+                            first_err = errors[0]
+                            error_detail = f"[{first_err.get('code')}] {first_err.get('title', '')}: {first_err.get('message', '')}"
+                            print(f"[STATUS] ❌ Message {status_msg_id} to {recipient_phone} FAILED: {error_detail}")
+                        else:
+                            print(f"[STATUS] ✅ Message {status_msg_id} to {recipient_phone} is now '{msg_status}'")
+                            
+                        db.update_message_status(status_msg_id, msg_status, error_detail)
                                 
     return jsonify({"status": "processed"}), 200
 

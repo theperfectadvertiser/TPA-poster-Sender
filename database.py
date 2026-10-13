@@ -134,9 +134,11 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
-        # Migration: Add media_b64 if column doesn't exist
+        # Migration: Add media_b64, delivery_status, error_detail if columns don't exist
         try:
             cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_b64 TEXT")
+            cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_status VARCHAR(50) DEFAULT 'sent'")
+            cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS error_detail TEXT")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -170,9 +172,19 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
-        # Migration: Add media_b64 if column doesn't exist
+        # Migration: Add media_b64, delivery_status, error_detail if columns don't exist
         try:
             cursor.execute("ALTER TABLE messages ADD COLUMN media_b64 TEXT")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE messages ADD COLUMN delivery_status TEXT DEFAULT 'sent'")
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE messages ADD COLUMN error_detail TEXT")
             conn.commit()
         except Exception:
             pass
@@ -518,6 +530,27 @@ def save_message(phone, sender, message, msg_id=None, media_b64=None):
     finally:
         conn.close()
 
+def update_message_status(msg_id, status, error_detail=None):
+    """Updates the delivery status of a sent message (e.g. delivered, read, failed)."""
+    if not msg_id:
+        return False
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """UPDATE messages 
+               SET delivery_status = ?, error_detail = ? 
+               WHERE msg_id = ?""",
+            (status, error_detail, msg_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating message status: {e}")
+        return False
+    finally:
+        conn.close()
+
 def get_messages_for_phone(phone, limit=50):
     """Retrieves the latest chat messages for a specific phone number (ordered by timestamp)."""
     conn = get_db_connection()
@@ -669,7 +702,9 @@ def get_today_broadcast_delivery_status(category_filter="All"):
             return clients_df
             
         sent_query = f"""
-            SELECT phone, MAX(timestamp) as timestamp, MAX(msg_id) as msg_id
+            SELECT phone, MAX(timestamp) as timestamp, MAX(msg_id) as msg_id,
+                   COALESCE(MAX(delivery_status), 'sent') as delivery_status,
+                   MAX(error_detail) as error_detail
             FROM messages
             WHERE sender = 'business' AND timestamp >= '{today_utc}'
             GROUP BY phone
@@ -680,29 +715,34 @@ def get_today_broadcast_delivery_status(category_filter="All"):
         for _, r in sent_df.iterrows():
             clean_p = "".join(filter(str.isdigit, str(r['phone'])))
             if clean_p:
-                sent_map[clean_p] = (r['timestamp'], r['msg_id'])
+                sent_map[clean_p] = (r['timestamp'], r['msg_id'], r.get('delivery_status', 'sent'), r.get('error_detail'))
                 if len(clean_p) >= 10:
-                    sent_map[clean_p[-10:]] = (r['timestamp'], r['msg_id'])
+                    sent_map[clean_p[-10:]] = (r['timestamp'], r['msg_id'], r.get('delivery_status', 'sent'), r.get('error_detail'))
                     
         status_list = []
         time_list = []
         msg_list = []
+        err_list = []
         
         for _, r in clients_df.iterrows():
             clean_cp = "".join(filter(str.isdigit, str(r['Phone'])))
             info = sent_map.get(clean_cp) or (sent_map.get(clean_cp[-10:]) if len(clean_cp) >= 10 else None)
             if info:
-                status_list.append("SENT")
+                d_stat = str(info[2]).upper() if info[2] else "SENT"
+                status_list.append(d_stat)
                 time_list.append(info[0])
                 msg_list.append(info[1])
+                err_list.append(info[3])
             else:
                 status_list.append("NOT_SENT")
                 time_list.append(None)
                 msg_list.append(None)
+                err_list.append(None)
                 
         clients_df['Delivery Status'] = status_list
         clients_df['Sent Time'] = time_list
         clients_df['Message ID'] = msg_list
+        clients_df['Error Reason'] = err_list
         return clients_df
     except Exception as e:
         print(f"Error in get_today_broadcast_delivery_status: {e}")
