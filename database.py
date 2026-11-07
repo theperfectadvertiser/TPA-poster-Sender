@@ -108,42 +108,46 @@ def init_db():
     
     if DATABASE_URL and PSYCOPG2_AVAILABLE:
         # PostgreSQL schema
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS clients (
-                id SERIAL PRIMARY KEY,
-                client_id VARCHAR(50) UNIQUE NOT NULL,
-                name VARCHAR(100) NOT NULL,
-                phone VARCHAR(30) NOT NULL,
-                category VARCHAR(50),
-                status VARCHAR(20) DEFAULT 'Active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                phone VARCHAR(30) NOT NULL,
-                sender VARCHAR(20) NOT NULL,
-                message TEXT NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                msg_id VARCHAR(100) UNIQUE,
-                media_b64 TEXT
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key VARCHAR(100) PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        """)
-        # Migration: Add media_b64, delivery_status, error_detail if columns don't exist
         try:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS clients (
+                    id SERIAL PRIMARY KEY,
+                    client_id VARCHAR(50) UNIQUE NOT NULL,
+                    name VARCHAR(100) NOT NULL,
+                    phone VARCHAR(30) NOT NULL,
+                    category VARCHAR(50),
+                    status VARCHAR(20) DEFAULT 'Active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id SERIAL PRIMARY KEY,
+                    phone VARCHAR(30) NOT NULL,
+                    sender VARCHAR(20) NOT NULL,
+                    message TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    msg_id VARCHAR(100) UNIQUE,
+                    media_b64 TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key VARCHAR(100) PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            # Migration: Add media_b64, delivery_status, error_detail if columns don't exist
             cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_b64 TEXT")
             cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_status VARCHAR(50) DEFAULT 'sent'")
             cursor.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS error_detail TEXT")
             conn.commit()
-        except Exception:
-            conn.rollback()
+        except Exception as e:
+            print(f"[INFO] Skipping DB table init (tables already exist or read-only mode): {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     else:
         # SQLite schema
         cursor.execute("""
