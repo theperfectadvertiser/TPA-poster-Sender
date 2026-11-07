@@ -6,14 +6,14 @@ import time
 
 DB_FILE = "clients.db"
 USE_LOCAL_DB = os.environ.get("USE_LOCAL_DB", "").lower() in ("true", "1", "yes")
-DEFAULT_SUPABASE_URL = "postgresql://postgres.uwmrqvxcjcixkklovrll:TPA_Admin_2026%21@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
+DEFAULT_SUPABASE_URL = "postgresql://postgres.yujgrigwhvjxscnopkin:Shoaib%4055%405@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
-if USE_LOCAL_DB or os.environ.get("DATABASE_URL") == "":
+if USE_LOCAL_DB or os.environ.get("DATABASE_URL") == "sqlite":
     DATABASE_URL = None
 else:
     DATABASE_URL = os.environ.get("DATABASE_URL") or DEFAULT_SUPABASE_URL
 
-if DATABASE_URL and ("db.uwmrqvxcjcixkklovrll.supabase.co" in DATABASE_URL):
+if DATABASE_URL and ("db.yujgrigwhvjxscnopkin.supabase.co" in DATABASE_URL):
     DATABASE_URL = DEFAULT_SUPABASE_URL
 
 # Try to import psycopg2 for PostgreSQL support
