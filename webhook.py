@@ -5,24 +5,93 @@ import json
 import requests
 
 # Initialize database tables
-db.init_db()
+try:
+    db.init_db()
+except Exception as e:
+    print(f"[INFO] Skipping DB init in webhook: {e}")
 
 app = Flask(__name__)
 
 # Verification token for Meta webhook configuration
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "tpa_secure_verify_token_2026")
+ADMIN_ALERT_PHONE = "917887555222"
 
 def get_meta_credentials():
-    """Reads credentials from database settings to dynamically query Meta endpoints."""
-    try:
-        return {
-            "ACCESS_TOKEN": db.get_setting("ACCESS_TOKEN"),
-            "PHONE_NUMBER_ID": db.get_setting("PHONE_NUMBER_ID"),
-            "WABA_ID": db.get_setting("WABA_ID")
+    """Reads credentials from database settings, config.json, or environment variables."""
+    token = os.environ.get("ACCESS_TOKEN")
+    phone_id = os.environ.get("PHONE_NUMBER_ID")
+    waba_id = os.environ.get("WABA_ID")
+    
+    if not token or not phone_id:
+        try:
+            if os.path.exists("config.json"):
+                with open("config.json") as f:
+                    cfg = json.load(f)
+                    token = token or cfg.get("ACCESS_TOKEN")
+                    phone_id = phone_id or cfg.get("PHONE_NUMBER_ID")
+                    waba_id = waba_id or cfg.get("WABA_ID")
+        except Exception:
+            pass
+            
+    if not token or not phone_id:
+        try:
+            token = token or db.get_setting("ACCESS_TOKEN")
+            phone_id = phone_id or db.get_setting("PHONE_NUMBER_ID")
+            waba_id = waba_id or db.get_setting("WABA_ID")
+        except Exception:
+            pass
+            
+    return {
+        "ACCESS_TOKEN": token,
+        "PHONE_NUMBER_ID": phone_id or "1302085039650692",
+        "WABA_ID": waba_id or "1348214214063661"
+    }
+
+def send_alert_to_admin(client_phone, client_name, message_body):
+    """Sends real-time 24/7 WhatsApp alert to admin personal phone (7887555222) with 1-click reply link."""
+    clean_p = "".join(filter(str.isdigit, str(client_phone)))
+    if clean_p == ADMIN_ALERT_PHONE or clean_p.endswith("7887555222"):
+        return  # Avoid forwarding admin's own messages
+        
+    creds = get_meta_credentials()
+    token = creds.get("ACCESS_TOKEN")
+    phone_id = creds.get("PHONE_NUMBER_ID") or "1302085039650692"
+    
+    if not token:
+        print("[ALERT ERROR] Cannot send admin alert: Meta token missing.")
+        return
+        
+    alert_text = (
+        f"🔔 *Naya Client WhatsApp Message!*\n\n"
+        f"👤 *Client:* {client_name}\n"
+        f"📱 *Phone:* +{clean_p}\n"
+        f"💬 *Message:* \"{message_body}\"\n\n"
+        f"👉 *Client se Phone par baat karne ke liye tap karein:*\n"
+        f"https://wa.me/{clean_p}"
+    )
+    
+    url = f"https://graph.facebook.com/v20.0/{phone_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": ADMIN_ALERT_PHONE,
+        "type": "text",
+        "text": {
+            "body": alert_text
         }
+    }
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=10)
+        if res.status_code == 200:
+            print(f"[ALERT SUCCESS] Forwarded message from {clean_p} to admin {ADMIN_ALERT_PHONE}")
+        else:
+            print(f"[ALERT FAILED] Meta error: {res.text}")
     except Exception as e:
-        print(f"[ERROR] Failed to load credentials from DB settings: {e}")
-        return {}
+        print(f"[ALERT EXCEPTION] Failed to send admin alert: {e}")
 
 def download_whatsapp_media(media_id, filename):
     """Downloads binary media files from Meta Cloud API."""
@@ -205,65 +274,74 @@ def capture_message():
                         if msg_type == "text":
                             body = msg.get("text", {}).get("body", "")
                             print(f"[INBOX] Incoming TEXT from {contact_name} ({from_phone}): '{body}'")
-                            
-                            # Save text message to DB
-                            db.save_message(from_phone, "client", body, msg_id)
+                            send_alert_to_admin(from_phone, contact_name, body)
+                            try:
+                                db.save_message(from_phone, "client", body, msg_id)
+                            except Exception as e:
+                                print(f"[DB] Optional local save: {e}")
                             
                         # Process image messages
                         elif msg_type == "image":
                             image_id = msg.get("image", {}).get("id")
                             filename = f"incoming_{image_id}.png"
                             
-                            print(f"[INBOX] Incoming IMAGE from {contact_name} ({from_phone}). Attempting download...")
-                            
-                            # Download the image file locally (for local execution compatibility)
-                            download_success = download_whatsapp_media(image_id, filename)
-                            
-                            # Fetch base64 representation for shared cloud db sync
-                            media_b64 = get_whatsapp_media_base64(image_id)
-                            
-                            # Construct public Render URL for the image
-                            public_media_url = f"https://tpa-poster-sender.onrender.com/media/{filename}"
-                            
-                            # Save media message details with public Render media URL and base64 representation to DB
-                            db.save_message(from_phone, "client", f"📷 Incoming Image: {public_media_url}", msg_id, media_b64=media_b64)
+                            print(f"[INBOX] Incoming IMAGE from {contact_name} ({from_phone}).")
+                            send_alert_to_admin(from_phone, contact_name, "📷 Photo / Image bheja hai")
+                            try:
+                                download_whatsapp_media(image_id, filename)
+                                media_b64 = get_whatsapp_media_base64(image_id)
+                                public_media_url = f"https://tpa-poster-sender.onrender.com/media/{filename}"
+                                db.save_message(from_phone, "client", f"📷 Incoming Image: {public_media_url}", msg_id, media_b64=media_b64)
+                            except Exception as e:
+                                print(f"[DB] Optional image save: {e}")
                             
                         # Process audio / voice note messages
                         elif msg_type == "audio":
                             audio_obj = msg.get("audio", {})
                             audio_id = audio_obj.get("id")
                             is_voice = audio_obj.get("voice", False)
-                            
                             label = "🎤 Voice Message" if is_voice else "🎵 Audio Message"
-                            print(f"[INBOX] Incoming {label} from {contact_name} ({from_phone}). Media ID: {audio_id}")
-                            
-                            # Download audio bytes as base64
-                            media_b64 = get_whatsapp_media_base64(audio_id) if audio_id else None
-                            db.save_message(from_phone, "client", label, msg_id, media_b64=media_b64)
+                            print(f"[INBOX] Incoming {label} from {contact_name} ({from_phone}).")
+                            send_alert_to_admin(from_phone, contact_name, label)
+                            try:
+                                media_b64 = get_whatsapp_media_base64(audio_id) if audio_id else None
+                                db.save_message(from_phone, "client", label, msg_id, media_b64=media_b64)
+                            except Exception as e:
+                                print(f"[DB] Optional audio save: {e}")
                             
                         # Process video messages
                         elif msg_type == "video":
                             video_obj = msg.get("video", {})
-                            video_id = video_obj.get("id")
                             caption = video_obj.get("caption", "Video")
-                            print(f"[INBOX] Incoming VIDEO from {contact_name} ({from_phone}). Media ID: {video_id}")
-                            media_b64 = get_whatsapp_media_base64(video_id) if video_id else None
-                            db.save_message(from_phone, "client", f"🎥 Video: {caption}", msg_id, media_b64=media_b64)
+                            print(f"[INBOX] Incoming VIDEO from {contact_name} ({from_phone}).")
+                            send_alert_to_admin(from_phone, contact_name, f"🎥 Video: {caption}")
+                            try:
+                                video_id = video_obj.get("id")
+                                media_b64 = get_whatsapp_media_base64(video_id) if video_id else None
+                                db.save_message(from_phone, "client", f"🎥 Video: {caption}", msg_id, media_b64=media_b64)
+                            except Exception as e:
+                                print(f"[DB] Optional video save: {e}")
                             
                         # Process document messages
                         elif msg_type == "document":
                             doc_obj = msg.get("document", {})
-                            doc_id = doc_obj.get("id")
                             doc_name = doc_obj.get("filename", "document.pdf")
                             print(f"[INBOX] Incoming DOCUMENT from {contact_name} ({from_phone}). Filename: {doc_name}")
-                            media_b64 = get_whatsapp_media_base64(doc_id) if doc_id else None
-                            db.save_message(from_phone, "client", f"📄 Document: {doc_name}", msg_id, media_b64=media_b64)
+                            send_alert_to_admin(from_phone, contact_name, f"📄 Document: {doc_name}")
+                            try:
+                                doc_id = doc_obj.get("id")
+                                media_b64 = get_whatsapp_media_base64(doc_id) if doc_id else None
+                                db.save_message(from_phone, "client", f"📄 Document: {doc_name}", msg_id, media_b64=media_b64)
+                            except Exception as e:
+                                print(f"[DB] Optional doc save: {e}")
                             
                         else:
-                            # Handle other types like location, buttons, etc.
                             body = f"[{msg_type.capitalize()} message received]"
-                            db.save_message(from_phone, "client", body, msg_id)
-                            print(f"[INBOX] Received message type: {msg_type} from {from_phone}")
+                            send_alert_to_admin(from_phone, contact_name, body)
+                            try:
+                                db.save_message(from_phone, "client", body, msg_id)
+                            except Exception as e:
+                                print(f"[DB] Optional other save: {e}")
                         
                         # Auto-register client in clients database if not present
                         try:

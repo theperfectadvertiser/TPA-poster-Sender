@@ -9,6 +9,9 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 } catch {}
 
+# Force Local Database Mode for 100% Free & Reliable execution
+$env:USE_LOCAL_DB = "true"
+
 # Ensure local bin directories are in PATH
 $localBinPath = Join-Path $env:USERPROFILE ".local\bin"
 $cargoBinPath = Join-Path $env:USERPROFILE ".cargo\bin"
