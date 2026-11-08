@@ -633,6 +633,8 @@ def get_conversations(search_query=None, limit=50):
 
 def save_setting(key, value):
     """Saves a configuration key-value pair to the database."""
+    if key in ("ACCESS_TOKEN", "PHONE_NUMBER_ID", "WABA_ID") and value is not None:
+        value = "".join(str(value).split())
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
@@ -657,7 +659,12 @@ def get_setting(key):
     try:
         cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
         row = cursor.fetchone()
-        return row[0] if row else None
+        if not row:
+            return None
+        val = row[0]
+        if key in ("ACCESS_TOKEN", "PHONE_NUMBER_ID", "WABA_ID") and val is not None:
+            val = "".join(str(val).split())
+        return val
     except Exception as e:
         print(f"Error getting setting {key}: {e}")
         return None

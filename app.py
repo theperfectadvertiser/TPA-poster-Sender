@@ -203,7 +203,7 @@ def fetch_templates_from_meta(phone_number_id, access_token, waba_id=None):
     if waba_id and waba_id.strip():
         url_templates = f"https://graph.facebook.com/v20.0/{waba_id.strip()}/message_templates"
         headers = {
-            "Authorization": f"Bearer {access_token}"
+            "Authorization": f"Bearer {''.join(str(access_token or '').split())}"
         }
         res_templates = requests.get(url_templates, headers=headers)
         if res_templates.status_code == 200:
@@ -216,7 +216,7 @@ def fetch_templates_from_meta(phone_number_id, access_token, waba_id=None):
     # 2. Fallback: Attempt WABA ID auto-discovery from phone number metadata
     url_phone = f"https://graph.facebook.com/v20.0/{phone_number_id}"
     headers = {
-        "Authorization": f"Bearer {access_token}"
+        "Authorization": f"Bearer {''.join(str(access_token or '').split())}"
     }
     res_phone = requests.get(url_phone, headers=headers)
     if res_phone.status_code != 200:
@@ -299,6 +299,15 @@ if "meta_templates" not in st.session_state and ACCESS_TOKEN and (WABA_ID or PHO
         st.session_state["meta_templates"] = fetch_templates_from_meta(PHONE_NUMBER_ID, ACCESS_TOKEN, WABA_ID)
     except Exception:
         st.session_state["meta_templates"] = []
+
+
+# Auto-clean Meta credentials from whitespace/newlines
+if "ACCESS_TOKEN" in locals() and ACCESS_TOKEN:
+    ACCESS_TOKEN = "".join(str(ACCESS_TOKEN).split())
+if "PHONE_NUMBER_ID" in locals() and PHONE_NUMBER_ID:
+    PHONE_NUMBER_ID = "".join(str(PHONE_NUMBER_ID).split())
+if "WABA_ID" in locals() and WABA_ID:
+    WABA_ID = "".join(str(WABA_ID).split())
 
 # Template Name and Language code selection
 TEMPLATE_NAME = "daily_poster_delivery"
@@ -440,7 +449,7 @@ def upload_image_to_meta(file_bytes, file_name, mime_type):
         
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/media"
     headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}"
+        "Authorization": f"Bearer {''.join(str(ACCESS_TOKEN or '').split())}"
     }
     files = {
         "file": (file_name, file_bytes, mime_type)
@@ -462,7 +471,7 @@ def send_whatsapp_template(to_phone, client_name, media_id, include_name=True):
         
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Authorization": f"Bearer {''.join(str(ACCESS_TOKEN or '').split())}",
         "Content-Type": "application/json"
     }
     
@@ -528,7 +537,7 @@ def send_direct_message(to_phone, message_text):
         
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Authorization": f"Bearer {''.join(str(ACCESS_TOKEN or '').split())}",
         "Content-Type": "application/json"
     }
     payload = {
