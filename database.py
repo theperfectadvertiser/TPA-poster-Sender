@@ -13,7 +13,7 @@ if USE_LOCAL_DB or os.environ.get("DATABASE_URL") == "sqlite":
 else:
     DATABASE_URL = os.environ.get("DATABASE_URL") or DEFAULT_SUPABASE_URL
 
-if DATABASE_URL and ("db.yujgrigwhvjxscnopkin.supabase.co" in DATABASE_URL):
+if DATABASE_URL and ("uwmrqvxcjcixkklovrll" in DATABASE_URL or "db.yujgrigwhvjxscnopkin.supabase.co" in DATABASE_URL):
     DATABASE_URL = DEFAULT_SUPABASE_URL
 
 # Try to import psycopg2 for PostgreSQL support
